@@ -6,7 +6,7 @@ async function runTest() {
   console.log('🤖 Starting Local Autonomous Agent Unit Test...');
   
   const config = {
-    model: 'qwen2.5-coder:14b',
+    model: 'qwen3.5:9b',
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     maxIterations: 5,
     workspacePath: path.resolve(process.cwd())

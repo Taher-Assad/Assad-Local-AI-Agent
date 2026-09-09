@@ -6,8 +6,8 @@ An autonomous, multimodal local AI software engineering agent running entirely o
 
 ## ✨ Features
 
-- **🧠 100% Local & Private**: Runs completely on your device via Ollama (supports `qwen2.5-coder`, `qwen3-coder`, `qwen3-vl`, and other Ollama models).
-- **👁️ Multimodal Vision**: Inspect, analyze, and generate UI/code from screenshots and images using Vision-Language models like `qwen3-vl:8b`.
+- **🧠 100% Local & Private**: Runs completely on your device via Ollama (defaults to `qwen3.5:9b` and supports other Ollama models).
+- **👁️ Multimodal Vision**: Inspect, analyze, and generate UI/code from screenshots and images using compatible Vision-Language models.
 - **🛠️ Autonomous Local System Tools**:
   - `write_file`: Create complete source files and directories automatically.
   - `edit_file`: Surgical find-and-replace code editing.
@@ -32,8 +32,7 @@ An autonomous, multimodal local AI software engineering agent running entirely o
 3. **Python** (optional, for image processing/scripts): 3.10+ with `pillow`, `matplotlib`
 4. Pull your preferred models in Ollama:
    ```bash
-   ollama pull qwen2.5-coder:14b
-   ollama pull qwen3-vl:8b-instruct-q4_K_M
+   ollama pull qwen3.5:9b
    ```
 
 ---

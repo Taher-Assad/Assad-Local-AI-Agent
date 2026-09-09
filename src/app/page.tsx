@@ -16,7 +16,7 @@ import { useFileExplorer } from '@/hooks/useFileExplorer';
 import { Terminal, X, Code2, Layers } from 'lucide-react';
 
 export default function Page() {
-  const [selectedModel, setSelectedModel] = useState('qwen2.5-coder:14b');
+  const [selectedModel, setSelectedModel] = useState('qwen3.5:9b');
   const [workspacePath, setWorkspacePath] = useState('c:/D/antigraphity-agent'); // Set workspace relative path default
   const [showArtifacts, setShowArtifacts] = useState(true);
 

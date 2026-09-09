@@ -1,5 +1,4 @@
-import ollama from 'ollama';
-import {
+import type {
   AgentConfig,
   AgentRunStatus,
   AgentSettings,
@@ -22,7 +21,18 @@ import {
 } from './artifacts';
 import { evaluateToolPermission, resolveSettings, requiresPlanApproval } from './permissions';
 import { collectMediaFromFiles } from './capture';
-import { buildSystemPrompt, PromptPhase } from './system-prompt';
+import { buildSystemPrompt, type PromptPhase } from './system-prompt';
+import { defaultModelClient, type ModelClient } from './model-client';
+
+export interface AgentRuntime {
+  modelClient: ModelClient;
+  executeTool: typeof executeTool;
+}
+
+const DEFAULT_RUNTIME: AgentRuntime = {
+  modelClient: defaultModelClient,
+  executeTool
+};
 
 export interface AgentUpdate {
   type:
@@ -258,7 +268,7 @@ async function* runToolLoop(
 
     try {
       // 1. Call Ollama Chat Completions (with multimodal images support)
-      const response = await ollama.chat({
+      const response = await config.client.chat({
         model: config.model,
         messages: messages.map(m => {
           const msgObj: any = {
@@ -517,11 +527,11 @@ async function* runPlanningPhase(
   let planMarkdown = '';
   try {
     // No `tools` here on purpose: the planning turn must return prose only.
-    const response = await ollama.chat({
+    const response = await config.client.chat({
       model: config.model,
       messages: messages.map(m => ({ role: m.role, content: m.content, images: m.images })),
       options: { num_ctx: 4096, temperature: 0.2 }
-    });
+    }, { phase: 'plan', iteration: 0 });
     planMarkdown = response.message?.content?.trim() || '';
   } catch (error) {
     yield {
