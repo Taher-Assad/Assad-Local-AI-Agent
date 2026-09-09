@@ -268,7 +268,7 @@ async function* runToolLoop(
 
     try {
       // 1. Call Ollama Chat Completions (with multimodal images support)
-      const response = await config.client.chat({
+      const response = await defaultModelClient.chat({
         model: config.model,
         messages: messages.map(m => {
           const msgObj: any = {
@@ -527,7 +527,7 @@ async function* runPlanningPhase(
   let planMarkdown = '';
   try {
     // No `tools` here on purpose: the planning turn must return prose only.
-    const response = await config.client.chat({
+    const response = await defaultModelClient.chat({
       model: config.model,
       messages: messages.map(m => ({ role: m.role, content: m.content, images: m.images })),
       options: { num_ctx: 4096, temperature: 0.2 }
