@@ -9,7 +9,7 @@ import type {
   TaskGroup,
   TaskGroupStatus,
   TaskStatus
-} from '@/types';
+} from '../../types/index.ts';
 
 /* ------------------------------------------------------------------ *
  * ID helpers

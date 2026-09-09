@@ -27,7 +27,8 @@ export interface ModelCallMetric {
   evalCount?: number;
 }
 
-export type ChatTransport = (request: ChatRequest) => Promise<ChatResponse>;
+export type NonStreamingChatRequest = Omit<ChatRequest, 'stream'> & { stream?: false };
+export type ChatTransport = (request: NonStreamingChatRequest) => Promise<ChatResponse>;
 export type MetricsSink = (metric: ModelCallMetric) => void;
 
 export interface ModelClientOptions {
@@ -37,7 +38,7 @@ export interface ModelClientOptions {
 }
 
 export interface ModelClient {
-  chat(request: ChatRequest, metadata: ModelCallMetadata): Promise<ChatResponse>;
+  chat(request: NonStreamingChatRequest, metadata: ModelCallMetadata): Promise<ChatResponse>;
 }
 
 function isDuration(value: string): boolean {
@@ -61,7 +62,7 @@ function optionalNumber(value: unknown): number | undefined {
 }
 
 export function createModelClient(options: ModelClientOptions = {}): ModelClient {
-  const chat = options.chat ?? (request => ollama.chat(request));
+  const chat = options.chat ?? (request => ollama.chat({ ...request, stream: false }));
   const keepAlive = options.keepAlive === undefined
     ? resolveKeepAlive()
     : options.keepAlive;
@@ -69,7 +70,7 @@ export function createModelClient(options: ModelClientOptions = {}): ModelClient
 
   return {
     async chat(request, metadata) {
-      const forwarded: ChatRequest = keepAlive === null
+      const forwarded: NonStreamingChatRequest = keepAlive === null
         ? request
         : { ...request, keep_alive: keepAlive };
       const startedAt = performance.now();

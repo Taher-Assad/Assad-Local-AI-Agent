@@ -4,7 +4,7 @@ import type {
   CommandExecutionPolicy,
   ExecutionMode,
   PermissionEvaluation
-} from '@/types';
+} from '../../types/index.ts';
 
 /**
  * Risk classification for every tool the agent can call.
@@ -133,9 +133,12 @@ export function isDeniedCommand(command: string, denyList: string[]): boolean {
   });
 }
 
-/** True when the command starts with an allow-list entry. */
+const SHELL_MUTATION_PATTERN = /(?:^|\s)(?:>|>>|2>|&>|tee|out-file|set-content|add-content|new-item|remove-item|move-item|copy-item|rename-item|mkdir|rm|del|mv|cp)(?:\s|$)/i;
+
+/** True when the command starts with an allow-list entry and adds no mutation. */
 export function isAllowListedCommand(command: string, allowList: string[]): boolean {
   const normalized = normalizeCommand(command);
+  if (SHELL_MUTATION_PATTERN.test(normalized)) return false;
   return allowList.some(entry => {
     const needle = normalizeCommand(entry);
     return needle.length > 0 && (normalized === needle || normalized.startsWith(`${needle} `));

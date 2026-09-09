@@ -1,22 +1,38 @@
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
-import { ToolDefinition } from '@/types';
+import type { ToolDefinition } from '../../../types/index.ts';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
-// Helper to sanitize paths and prevent directory traversal
+function isInsideWorkspace(workspacePath: string, targetPath: string): boolean {
+  const relative = path.relative(path.resolve(workspacePath), path.resolve(targetPath));
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+// Resolve a path and reject sibling-prefix and parent-traversal escapes.
 function sanitizePath(workspacePath: string, targetPath: string): string {
   const absoluteWorkspace = path.resolve(workspacePath);
-  const absoluteTarget = path.isAbsolute(targetPath) 
-    ? path.resolve(targetPath) 
-    : path.resolve(workspacePath, targetPath);
+  const absoluteTarget = path.isAbsolute(targetPath)
+    ? path.resolve(targetPath)
+    : path.resolve(absoluteWorkspace, targetPath);
 
-  if (!absoluteTarget.startsWith(absoluteWorkspace)) {
+  if (!isInsideWorkspace(absoluteWorkspace, absoluteTarget)) {
     throw new Error(`Access Denied: Path "${targetPath}" is outside the workspace "${workspacePath}"`);
   }
   return absoluteTarget;
+}
+
+const POWERSHELL_OUTSIDE_WORKSPACE_PATTERN =
+  /(?:^|[\s;|&('"`])(?:[a-zA-Z]:(?:[\\/]|(?=$|[\s'"`]))|\\\\|\/)|(?:^|[\s'"`])\.\.(?:[\\/]|$)|\b(?:set-location|cd|chdir|push-location|new-psdrive|subst)\b|(?:filesystem|registry|certificate|env):/i;
+
+export function validateWorkspaceCommand(command: string): string | null {
+  if (POWERSHELL_OUTSIDE_WORKSPACE_PATTERN.test(command)) {
+    return 'Command may reference a location outside the selected workspace.';
+  }
+  return null;
 }
 
 // 1. Tool Definitions for Ollama
@@ -262,21 +278,25 @@ export async function executeTool(
         const command = args.command;
         const cwdPath = args.cwd || '.';
         const targetCwd = sanitizePath(workspacePath, cwdPath);
-        
-        // Basic safety check for dangerous patterns
+        const workspaceError = validateWorkspaceCommand(command);
+        if (workspaceError) return `Error: Execution blocked. ${workspaceError}`;
+
         const dangerousPatterns = ['rm -rf /', 'mkfs', 'dd if', 'format ', 'del /f /s /q c:'];
         if (dangerousPatterns.some(p => command.toLowerCase().includes(p))) {
-          return `Error: Execution blocked. Command contains dangerous patterns.`;
+          return 'Error: Execution blocked. Command contains dangerous patterns.';
         }
 
-        const { stdout, stderr } = await execAsync(command, {
-          cwd: targetCwd,
-          timeout: 30000 // 30 second timeout
-        });
-        
+        const execution = process.platform === 'win32'
+          ? await execFileAsync(
+              'powershell.exe',
+              ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command],
+              { cwd: targetCwd, timeout: 30000, windowsHide: true }
+            )
+          : await execAsync(command, { cwd: targetCwd, timeout: 30000 });
+
         return JSON.stringify({
-          stdout: stdout.trim(),
-          stderr: stderr.trim()
+          stdout: execution.stdout.trim(),
+          stderr: execution.stderr.trim()
         }, null, 2);
       }
 

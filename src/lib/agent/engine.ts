@@ -8,21 +8,21 @@ import type {
   PlanProgress,
   TaskGroup,
   TaskStatus
-} from '@/types';
-import { TOOLS, executeTool } from './tools';
+} from '../../types/index.ts';
+import { TOOLS, executeTool } from './tools/index.ts';
 import {
   applyTaskMarkers,
   computeProgress,
   createImplementationPlan,
   createWalkthrough,
   extractVerificationCommands,
-  VerificationResult,
   withTaskGroups
-} from './artifacts';
-import { evaluateToolPermission, resolveSettings, requiresPlanApproval } from './permissions';
-import { collectMediaFromFiles } from './capture';
-import { buildSystemPrompt, type PromptPhase } from './system-prompt';
-import { defaultModelClient, type ModelClient } from './model-client';
+} from './artifacts.ts';
+import type { VerificationResult } from './artifacts.ts';
+import { evaluateToolPermission, resolveSettings, requiresPlanApproval } from './permissions.ts';
+import { collectMediaFromFiles } from './capture.ts';
+import { buildSystemPrompt, type PromptPhase } from './system-prompt.ts';
+import { defaultModelClient, type ModelClient } from './model-client.ts';
 
 export interface AgentRuntime {
   modelClient: ModelClient;
@@ -80,8 +80,8 @@ function cleanAndParseJson(jsonString: string): any {
     return JSON.parse(trimmed);
   } catch {
     try {
-      // Fix unescaped backslashes that are not valid JSON escape sequences (e.g. \., \_, \U, windows paths like C:\...)
-      const sanitized = trimmed.replace(/\\([^"\\/bfnrtu])/g, '$1');
+      // Repair invalid JSON escapes without deleting Windows path separators.
+      const sanitized = trimmed.replace(/\\([^"\\/bfnrtu])/g, '\\\\$1');
       return JSON.parse(sanitized);
     } catch {
       try {
@@ -95,53 +95,85 @@ function cleanAndParseJson(jsonString: string): any {
   }
 }
 
-// Helper to extract tool calls from text if native tool_calls is empty
-function extractToolCallsFromText(content: string): { name: string; args: any }[] {
-  const extracted: { name: string; args: any }[] = [];
-  if (!content) return extracted;
+type NormalizedToolCall = { name: string; args: Record<string, unknown> };
 
-  // 1. Check for <tool_call>...</tool_call> tags (Qwen / DeepSeek style)
-  const tagRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
-  let match;
-  while ((match = tagRegex.exec(content)) !== null) {
-    const parsed = cleanAndParseJson(match[1]);
-    if (parsed && parsed.name && (parsed.arguments || parsed.args || parsed.parameters)) {
-      extracted.push({
-        name: parsed.name,
-        args: parsed.arguments || parsed.args || parsed.parameters || {}
-      });
-    }
+const KNOWN_TOOL_NAMES = new Set(TOOLS.map(tool => tool.function.name));
+
+function normalizeToolCallCandidate(candidate: unknown): NormalizedToolCall[] {
+  if (Array.isArray(candidate)) {
+    return candidate.flatMap(normalizeToolCallCandidate);
   }
-  if (extracted.length > 0) return extracted;
+  if (!candidate || typeof candidate !== 'object') return [];
 
-  // 2. Check for markdown code blocks ```json ... ``` or ``` ... ```
-  const blockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
-  while ((match = blockRegex.exec(content)) !== null) {
-    const parsed = cleanAndParseJson(match[1]);
-    if (parsed && parsed.name && (parsed.arguments || parsed.args || parsed.parameters)) {
-      extracted.push({
-        name: parsed.name,
-        args: parsed.arguments || parsed.args || parsed.parameters || {}
-      });
-    }
-  }
-  if (extracted.length > 0) return extracted;
-
-  // 3. Check for raw JSON object in content
-  const firstBrace = content.indexOf('{');
-  const lastBrace = content.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    const jsonCandidate = content.substring(firstBrace, lastBrace + 1);
-    const parsed = cleanAndParseJson(jsonCandidate);
-    if (parsed && parsed.name && (parsed.arguments || parsed.args || parsed.parameters)) {
-      extracted.push({
-        name: parsed.name,
-        args: parsed.arguments || parsed.args || parsed.parameters || {}
-      });
-    }
+  const record = candidate as Record<string, unknown>;
+  if (!record.name) {
+    const wrapped = record.function_call ?? record.function ?? record.tool;
+    if (wrapped) return normalizeToolCallCandidate(wrapped);
   }
 
-  return extracted;
+  const name = typeof record.name === 'string' ? record.name.trim() : '';
+  if (!KNOWN_TOOL_NAMES.has(name)) return [];
+
+  let args = record.arguments ?? record.args ?? record.parameters ?? record.input ?? {};
+  if (typeof args === 'string') args = cleanAndParseJson(args);
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return [];
+
+  return [{ name, args: args as Record<string, unknown> }];
+}
+
+function extractJsonFragments(text: string): string[] {
+  const fragments: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let quote = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quote = false;
+      continue;
+    }
+    if (char === '"') quote = true;
+    else if (char === '{' || char === '[') {
+      if (depth++ === 0) start = index;
+    } else if ((char === '}' || char === ']') && depth > 0 && --depth === 0 && start >= 0) {
+      fragments.push(text.slice(start, index + 1));
+      start = -1;
+    }
+  }
+  return fragments;
+}
+
+export function extractToolCallsFromText(content: string): NormalizedToolCall[] {
+  if (!content) return [];
+
+  const tagged = [...content.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/gi)]
+    .flatMap(match => normalizeToolCallCandidate(cleanAndParseJson(match[1])));
+  if (tagged.length > 0) return tagged;
+
+  const blocked = [...content.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)]
+    .flatMap(match => normalizeToolCallCandidate(cleanAndParseJson(match[1])));
+  if (blocked.length > 0) return blocked;
+
+  return extractJsonFragments(content)
+    .flatMap(fragment => normalizeToolCallCandidate(cleanAndParseJson(fragment)));
+}
+
+function isActionableRequest(goal: string): boolean {
+  const normalized = goal.trim().toLowerCase();
+  if (/^(?:what|why|how|when|where|who|explain|describe|tell me about)\b/.test(normalized)) {
+    return false;
+  }
+  return /\b(add|create|write|edit|modify|change|delete|remove|rename|move|copy|run|execute|install|build|test|fix|generate|save|make|update|list|read|open|inspect|search|find|check|convert|start|stop)(?:ed|d|s|ing)?\b/.test(
+    normalized
+  );
+}
+
+function requestsShellExecution(goal: string): boolean {
+  return /\b(powershell|terminal|shell|command(?: prompt)?|cmd(?:\.exe)?)\b/i.test(goal);
 }
 
 /** Extracts a readable message from an unknown thrown value. */
@@ -233,7 +265,8 @@ async function* runToolLoop(
   history: Message[],
   run: RunState,
   phase: PromptPhase,
-  maxIterations: number
+  maxIterations: number,
+  runtime: AgentRuntime
 ): AsyncGenerator<AgentUpdate, 'ok' | 'error' | 'halted', unknown> {
 
   const workspacePath = config.workspacePath;
@@ -243,6 +276,8 @@ async function* runToolLoop(
   const messages: Message[] = [...history];
 
   let iteration = 0;
+  let executedTool = false;
+  let correctionAttempts = 0;
 
   while (iteration < maxIterations) {
     iteration++;
@@ -268,7 +303,7 @@ async function* runToolLoop(
 
     try {
       // 1. Call Ollama Chat Completions (with multimodal images support)
-      const response = await defaultModelClient.chat({
+      const response = await runtime.modelClient.chat({
         model: config.model,
         messages: messages.map(m => {
           const msgObj: any = {
@@ -281,6 +316,9 @@ async function* runToolLoop(
           if (m.tool_calls) {
             msgObj.tool_calls = m.tool_calls;
           }
+          if (m.role === 'tool' && m.name) {
+            msgObj.tool_name = m.name;
+          }
           return msgObj;
         }),
         tools: TOOLS as any,
@@ -288,8 +326,7 @@ async function* runToolLoop(
           num_ctx: 4096, // Highly optimized context size for 2x faster local generation
           temperature: 0.1
         }
-      });
-
+      }, { phase, iteration });
       const assistantMessage = response.message;
       const rawContent = assistantMessage.content || '';
 
@@ -328,19 +365,35 @@ async function* runToolLoop(
       let callsToExecute: { name: string; args: any }[] = [];
 
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-        for (const tc of assistantMessage.tool_calls) {
-          let toolArgs = tc.function.arguments;
-          if (typeof toolArgs === 'string') {
-            toolArgs = cleanAndParseJson(toolArgs) || {};
-          }
-          callsToExecute.push({ name: tc.function.name, args: toolArgs || {} });
-        }
+        callsToExecute = assistantMessage.tool_calls.flatMap(tc =>
+          normalizeToolCallCandidate(tc.function)
+        );
       } else {
-        // Try fallback extraction
-        const fallbackCalls = extractToolCallsFromText(rawContent);
-        if (fallbackCalls.length > 0) {
-          callsToExecute = fallbackCalls;
+        callsToExecute = extractToolCallsFromText(rawContent);
+      }
+
+      if (
+        phase === 'execute' &&
+        callsToExecute.length > 0 &&
+        requestsShellExecution(run.goal) &&
+        !callsToExecute.some(call => call.name === 'run_command')
+      ) {
+        if (correctionAttempts === 0 && iteration < maxIterations) {
+          correctionAttempts++;
+          messages.push({
+            role: 'user',
+            content:
+              'The user explicitly requested shell execution. Call run_command now with a workspace-relative PowerShell command. Do not substitute write_file or edit_file.'
+          });
+          continue;
         }
+        yield {
+          type: 'error',
+          content: `Model ${config.model} did not produce the requested run_command tool call. Nothing was executed.`,
+          runStatus: 'failed',
+          phase
+        };
+        return 'error';
       }
 
       // 3. Execute detected tool calls
@@ -409,7 +462,8 @@ async function* runToolLoop(
 
           // Execute tool on disk with duration measurement
           const startTime = Date.now();
-          const result = await executeTool(toolName, toolArgs, workspacePath);
+          const result = await runtime.executeTool(toolName, toolArgs, workspacePath);
+          executedTool = true;
           const duration = Date.now() - startTime;
 
           recordToolEffect(run, toolName, toolArgs, result);
@@ -442,7 +496,29 @@ async function* runToolLoop(
         continue;
       }
 
-      // 4. No tools called. This is the final response.
+      // 4. Do not accept a promise to act as successful execution. Give Qwen one
+      // bounded correction turn, but never infer a shell command from prose.
+      if (phase === 'execute' && !executedTool && isActionableRequest(run.goal)) {
+        if (correctionAttempts === 0 && iteration < maxIterations) {
+          correctionAttempts++;
+          messages.push({
+            role: 'user',
+            content:
+              'Your previous response did not call a tool. Perform the requested action now with exactly one available tool call. Prefer run_command with PowerShell on Windows. Return a structured tool call, not prose.'
+          });
+          continue;
+        }
+
+        yield {
+          type: 'error',
+          content: `Model ${config.model} did not produce a valid tool call for this action. Nothing was executed.`,
+          runStatus: 'failed',
+          phase
+        };
+        return 'error';
+      }
+
+      // No action was requested, or tool work has completed: prose is final.
       if (rawContent) {
         run.finalText = rawContent;
         yield { type: 'text', content: rawContent, estimatedTime: estimatedTime, phase };
@@ -504,7 +580,8 @@ function recordToolEffect(
 async function* runPlanningPhase(
   config: AgentConfig,
   history: Message[],
-  run: RunState
+  run: RunState,
+  runtime: AgentRuntime
 ): AsyncGenerator<AgentUpdate, 'continue' | 'awaiting-review' | 'failed', unknown> {
   const { estimatedTime } = run;
 
@@ -527,7 +604,7 @@ async function* runPlanningPhase(
   let planMarkdown = '';
   try {
     // No `tools` here on purpose: the planning turn must return prose only.
-    const response = await defaultModelClient.chat({
+    const response = await runtime.modelClient.chat({
       model: config.model,
       messages: messages.map(m => ({ role: m.role, content: m.content, images: m.images })),
       options: { num_ctx: 4096, temperature: 0.2 }
@@ -608,7 +685,8 @@ async function* runPlanningPhase(
  */
 async function* runVerificationPhase(
   config: AgentConfig,
-  run: RunState
+  run: RunState,
+  runtime: AgentRuntime
 ): AsyncGenerator<AgentUpdate, void, unknown> {
   const commands = extractVerificationCommands(run.taskGroups);
   if (commands.length === 0) return;
@@ -652,7 +730,7 @@ async function* runVerificationPhase(
     };
 
     const startTime = Date.now();
-    const output = await executeTool('run_command', { command }, config.workspacePath);
+    const output = await runtime.executeTool('run_command', { command }, config.workspacePath);
     const duration = Date.now() - startTime;
     const passed = !/(^|\n)\s*error/i.test(output) && !/exit code [1-9]/i.test(output);
 
@@ -691,7 +769,8 @@ async function* runVerificationPhase(
  */
 export async function* runAgent(
   config: AgentConfig,
-  history: Message[]
+  history: Message[],
+  runtime: AgentRuntime = DEFAULT_RUNTIME
 ): AsyncGenerator<AgentUpdate, void, unknown> {
   const maxIterations = config.maxIterations || 8;
   const settings = resolveSettings(config.settings);
@@ -715,7 +794,7 @@ export async function* runAgent(
   try {
     // PHASE 1 — Planning (skipped in Fast Mode or when a plan is already approved)
     if (settings.executionMode === 'planning' && !config.approvedPlan) {
-      const outcome = yield* runPlanningPhase(config, history, run);
+      const outcome = yield* runPlanningPhase(config, history, run, runtime);
       if (outcome !== 'continue') return;
     }
 
@@ -726,7 +805,8 @@ export async function* runAgent(
       executionMessages,
       run,
       'execute',
-      maxIterations
+      maxIterations,
+      runtime
     );
     // `halted` means a command is waiting on the user; the `done` event was
     // already emitted, so stop here without a walkthrough.
@@ -734,7 +814,7 @@ export async function* runAgent(
 
     // PHASE 3 — Verification (Planning Mode only; needs a plan to know what to run)
     if (settings.executionMode === 'planning' && run.taskGroups.length > 0) {
-      yield* runVerificationPhase(config, run);
+      yield* runVerificationPhase(config, run, runtime);
     }
 
     // PHASE 4 — Walkthrough

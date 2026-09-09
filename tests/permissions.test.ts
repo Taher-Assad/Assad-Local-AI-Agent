@@ -111,6 +111,14 @@ describe('command matching', () => {
     assert.equal(isAllowListedCommand('sudo npm test', DEFAULT_ALLOW_LIST), false);
   });
 
+  it('does not let allow-listed echo bypass mutation checks', () => {
+    assert.equal(isAllowListedCommand('echo unsafe > ..\\outside.txt', DEFAULT_ALLOW_LIST), false);
+    assert.equal(
+      isAllowListedCommand("echo safe | Set-Content 'inside.txt'", DEFAULT_ALLOW_LIST),
+      false
+    );
+  });
+
   it('treats read-only commands as sandbox safe', () => {
     assert.equal(isSandboxSafeCommand('git status'), true);
     assert.equal(isSandboxSafeCommand('npx tsc --noEmit'), true);

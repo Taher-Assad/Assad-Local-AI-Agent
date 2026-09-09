@@ -69,6 +69,15 @@ describe('buildSystemPrompt', () => {
     assert.ok(!prompt.includes(EXECUTION_PROMPT));
   });
 
+  it('directs action requests to workspace-local PowerShell tools', () => {
+    const prompt = buildSystemPrompt({ settings: settings(), workspacePath: 'c:/tmp/ws' });
+    assert.match(prompt, /prefer `run_command` with PowerShell syntax on Windows/i);
+    assert.match(prompt, /explicitly requests PowerShell.*MUST use `run_command`/i);
+    assert.match(prompt, /Set-Content -NoNewline/);
+    assert.match(prompt, /structured tool call/);
+    assert.match(prompt, /Never access paths outside that workspace/);
+  });
+
   it('warns the model when commands may be held for review', () => {
     const held = buildSystemPrompt({
       settings: settings({ commandExecutionPolicy: 'request-review' })
