@@ -11,7 +11,7 @@ export interface ToolCall {
   type: 'function';
   function: {
     name: string;
-    arguments: Record<string, any> | string; // Arguments can sometimes be a JSON string from Ollama
+    arguments: Record<string, unknown> | string; // Arguments can sometimes be a JSON string from Ollama
   };
 }
 
@@ -22,10 +22,120 @@ export interface ToolDefinition {
     description: string;
     parameters: {
       type: 'object';
-      properties: Record<string, any>;
+      properties: Record<string, Record<string, unknown>>;
       required?: string[];
     };
   };
+}
+
+export type ToolErrorCode =
+  | 'INVALID_ARGUMENT'
+  | 'OUTSIDE_WORKSPACE'
+  | 'NOT_FOUND'
+  | 'CONFLICT'
+  | 'COMMAND_FAILED'
+  | 'TIMEOUT'
+  | 'UNKNOWN_TOOL'
+  | 'IO_ERROR';
+
+export interface ToolExecutionError {
+  code: ToolErrorCode;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
+}
+
+export interface ToolEffect {
+  operation: string;
+  paths: string[];
+  workspaceChanged: boolean;
+}
+
+export interface CommandDiagnostics {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+}
+
+export interface ToolExecutionResult {
+  ok: boolean;
+  output: string;
+  error?: ToolExecutionError;
+  effects: ToolEffect[];
+  command?: CommandDiagnostics;
+}
+
+export type AgentFailureCode =
+  | 'MODEL_UNAVAILABLE'
+  | 'MODEL_INVALID_TOOL_CALL'
+  | 'MODEL_NO_TOOL_CALL'
+  | 'TOOL_FAILED'
+  | 'STREAM_PROTOCOL_ERROR'
+  | 'INTERNAL_ERROR';
+
+export interface AgentFailure {
+  code: AgentFailureCode;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
+}
+
+export type ToolCallStatus = 'running' | 'succeeded' | 'failed' | 'refused';
+
+export interface ToolCallState {
+  callId: string;
+  name: string;
+  args: unknown;
+  status: ToolCallStatus;
+  result?: string;
+  duration?: number;
+}
+
+export type AgentUpdateType =
+  | 'run_started'
+  | 'thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'text'
+  | 'done'
+  | 'error'
+  | 'phase'
+  | 'artifact'
+  | 'task_update'
+  | 'awaiting_review'
+  | 'verification'
+  | 'permission_denied';
+
+export interface AgentUpdate {
+  type: AgentUpdateType;
+  content?: string;
+  code?: string;
+  protocol?: string;
+  model?: string;
+  name?: string;
+  callId?: string;
+  args?: unknown;
+  result?: ToolExecutionResult;
+  resultStatus?: Exclude<ToolCallStatus, 'running'>;
+  mutationRevision?: number;
+  affectedFiles?: string[];
+  duration?: number;
+  estimatedTime?: string;
+  artifact?: Artifact;
+  taskGroups?: TaskGroup[];
+  taskId?: string;
+  taskStatus?: TaskStatus;
+  progress?: PlanProgress;
+  phase?: 'plan' | 'execute' | 'verify';
+  permission?: PermissionEvaluation;
+  verification?: {
+    label: string;
+    command?: string;
+    passed: boolean;
+    output?: string;
+  };
+  runStatus?: AgentRunStatus;
 }
 
 export interface AgentConfig {

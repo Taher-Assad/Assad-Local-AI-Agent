@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const selectedModel = model || 'qwen2.5-coder:14b';
+    const selectedModel = model || 'qwen3.5:9b';
     const workspacePath = workspace || path.resolve(process.cwd());
     // One-shot approvals are folded into the allow list so the same command is
     // not held for review again; the deny list still wins.

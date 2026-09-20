@@ -1,4 +1,4 @@
-import type { ArtifactMedia } from '@/types';
+import type { ArtifactMedia } from '../../types/index.ts';
 
 /**
  * Screenshot and browser-recording capture.

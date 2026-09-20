@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "direct-marker",
+      "kind": "direct",
+      "message": "Reply with exactly BENCH_DIRECT_OK and nothing else.",
+      "expectedMarker": "BENCH_DIRECT_OK"
+    },
+    {
+      "id": "history-sentinel",
+      "kind": "history",
+      "message": "Reply with exactly the sentinel from the prior conversation and nothing else.",
+      "expectedMarker": "BENCH_HISTORY_7Q4M",
+      "history": [
+        {
+          "role": "user",
+          "content": "Remember this sentinel for my next message: BENCH_HISTORY_7Q4M"
+        },
+        {
+          "role": "assistant",
+          "content": "I will remember it."
+        }
+      ]
+    },
+    {
+      "id": "read-fixture",
+      "kind": "read-tool",
+      "message": "Use the read_file tool to read known-value.txt, then reply with exactly the marker in that file and nothing else.",
+      "expectedMarker": "BENCH_FILE_M8K2",
+      "fixture": "known-value.txt"
+    },
+    {
+      "id": "planning-review",
+      "kind": "planning",
+      "message": "Draft an implementation plan for adding a /api/health endpoint. Do not execute the plan.",
+      "expectedArtifactKind": "implementation-plan",
+      "expectedRunStatus": "awaiting-review"
+    }
+  ]
+}

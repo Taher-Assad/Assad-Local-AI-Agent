@@ -6,8 +6,8 @@ An autonomous, multimodal local AI software engineering agent running entirely o
 
 ## ✨ Features
 
-- **🧠 100% Local & Private**: Runs completely on your device via Ollama (supports `qwen2.5-coder`, `qwen3-coder`, `qwen3-vl`, and other Ollama models).
-- **👁️ Multimodal Vision**: Inspect, analyze, and generate UI/code from screenshots and images using Vision-Language models like `qwen3-vl:8b`.
+- **🧠 100% Local & Private**: Runs completely on your device via Ollama (defaults to `qwen3.5:9b` and supports other Ollama models).
+- **👁️ Multimodal Vision**: Inspect, analyze, and generate UI/code from screenshots and images using compatible Vision-Language models.
 - **🛠️ Autonomous Local System Tools**:
   - `write_file`: Create complete source files and directories automatically.
   - `edit_file`: Surgical find-and-replace code editing.
@@ -32,8 +32,7 @@ An autonomous, multimodal local AI software engineering agent running entirely o
 3. **Python** (optional, for image processing/scripts): 3.10+ with `pillow`, `matplotlib`
 4. Pull your preferred models in Ollama:
    ```bash
-   ollama pull qwen2.5-coder:14b
-   ollama pull qwen3-vl:8b-instruct-q4_K_M
+   ollama pull qwen3.5:9b
    ```
 
 ---
@@ -72,9 +71,38 @@ Run the full automated test suite:
 npm test
 ```
 
+Typecheck (note: `npm test` runs `node --test` on `.ts` directly and does **not** typecheck):
+```bash
+npx tsc --noEmit
+```
+
 Build for production:
 ```bash
 npm run build
+```
+
+---
+
+## ⚡ Performance tuning
+
+Local inference cost is dominated by how many tokens the model must process on
+each call and how many round-trips a run takes. These environment variables tune
+that without code changes:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `AGENT_MODEL_NUM_CTX` | `8192` | Ollama `num_ctx`. The fixed per-call overhead (system prompt + tool schemas) is ~2.7k tokens. If the context window overflows mid-run, Ollama drops its cached prefix and re-processes that overhead on every later call — the biggest slowdown in multi-step runs. Raise it to retain more history (costs more KV-cache VRAM); lower it on tight hardware. |
+| `AGENT_MODEL_TEMPERATURE` | `0.1` | Sampling temperature for execution turns (`0`–`2`). |
+| `AGENT_PLANNING_TEMPERATURE` | `0.2` | Sampling temperature for the planning turn. |
+| `AGENT_OLLAMA_KEEP_ALIVE` | `15m` | How long Ollama keeps the model resident between turns. Staying warm skips the multi-second reload each turn; set `off` to opt out. |
+
+Measure the effect of any change with the built-in benchmark harness (requires a
+running dev server and Ollama):
+```bash
+npm run dev              # in one terminal
+npm run benchmark:chat -- --runs 7 --output before.json
+# make a change, restart dev, then:
+npm run benchmark:chat -- --runs 7 --baseline before.json
 ```
 
 ---

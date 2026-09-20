@@ -29,6 +29,9 @@ describe('classifyTool', () => {
     assert.equal(classifyTool('view_image'), 'read');
     assert.equal(classifyTool('write_file'), 'write');
     assert.equal(classifyTool('edit_file'), 'write');
+    assert.equal(classifyTool('copy_file'), 'write');
+    assert.equal(classifyTool('move_file'), 'write');
+    assert.equal(classifyTool('delete_file'), 'write');
     assert.equal(classifyTool('run_command'), 'command');
   });
 
@@ -109,6 +112,14 @@ describe('command matching', () => {
     assert.equal(isAllowListedCommand('npm test', DEFAULT_ALLOW_LIST), true);
     assert.equal(isAllowListedCommand('npm test -- --watch', DEFAULT_ALLOW_LIST), true);
     assert.equal(isAllowListedCommand('sudo npm test', DEFAULT_ALLOW_LIST), false);
+  });
+
+  it('does not let allow-listed echo bypass mutation checks', () => {
+    assert.equal(isAllowListedCommand('echo unsafe > ..\\outside.txt', DEFAULT_ALLOW_LIST), false);
+    assert.equal(
+      isAllowListedCommand("echo safe | Set-Content 'inside.txt'", DEFAULT_ALLOW_LIST),
+      false
+    );
   });
 
   it('treats read-only commands as sandbox safe', () => {

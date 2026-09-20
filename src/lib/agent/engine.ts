@@ -1,5 +1,4 @@
-import ollama from 'ollama';
-import {
+import type {
   AgentConfig,
   AgentRunStatus,
   AgentSettings,
@@ -8,21 +7,53 @@ import {
   PermissionEvaluation,
   PlanProgress,
   TaskGroup,
-  TaskStatus
-} from '@/types';
-import { TOOLS, executeTool } from './tools';
+  TaskStatus,
+  ToolExecutionResult
+} from '../../types/index.ts';
+import { TOOLS, executeTool } from './tools/index.ts';
 import {
   applyTaskMarkers,
   computeProgress,
   createImplementationPlan,
   createWalkthrough,
   extractVerificationCommands,
-  VerificationResult,
   withTaskGroups
-} from './artifacts';
-import { evaluateToolPermission, resolveSettings, requiresPlanApproval } from './permissions';
-import { collectMediaFromFiles } from './capture';
-import { buildSystemPrompt, PromptPhase } from './system-prompt';
+} from './artifacts.ts';
+import type { VerificationResult } from './artifacts.ts';
+import { evaluateToolPermission, resolveSettings, requiresPlanApproval } from './permissions.ts';
+import { collectMediaFromFiles } from './capture.ts';
+import { buildSystemPrompt, type PromptPhase } from './system-prompt.ts';
+import { defaultModelClient, type ModelClient, type NonStreamingChatRequest } from './model-client.ts';
+import type { Message as OllamaMessage, ToolCall as OllamaToolCall } from 'ollama';
+import {
+  ACTION_RECOVERY_SCHEMA,
+  MAX_ACTION_RECOVERY_ATTEMPTS,
+  MODEL_CONTEXT_TOKENS,
+  MODEL_TEMPERATURE,
+  PLANNING_TEMPERATURE
+} from './config.ts';
+
+export interface AgentRuntime {
+  modelClient: ModelClient;
+  executeTool(
+    name: string,
+    args: Record<string, unknown>,
+    workspacePath: string
+  ): Promise<ToolExecutionResult>;
+}
+
+function legacyExecuteTool(
+  name: string,
+  args: Record<string, unknown>,
+  workspacePath: string
+): Promise<ToolExecutionResult> {
+  return executeTool(name, args, workspacePath);
+}
+
+const DEFAULT_RUNTIME: AgentRuntime = {
+  modelClient: defaultModelClient,
+  executeTool: legacyExecuteTool
+};
 
 export interface AgentUpdate {
   type:
@@ -41,8 +72,12 @@ export interface AgentUpdate {
     | 'permission_denied';
   content?: string;
   name?: string;
-  args?: any;
-  result?: string;
+  callId?: string;
+  args?: unknown;
+  result?: ToolExecutionResult;
+  resultStatus?: 'succeeded' | 'failed' | 'refused';
+  mutationRevision?: number;
+  affectedFiles?: string[];
   duration?: number;
   estimatedTime?: string;
   /** Set on `artifact` events: the full artifact snapshot. */
@@ -63,15 +98,15 @@ export interface AgentUpdate {
 }
 
 // Helper to safely parse JSON and fix unescaped backslashes / invalid escape codes from LLMs
-function cleanAndParseJson(jsonString: string): any {
+function cleanAndParseJson(jsonString: string): unknown {
   if (!jsonString) return null;
   const trimmed = jsonString.trim();
   try {
     return JSON.parse(trimmed);
   } catch {
     try {
-      // Fix unescaped backslashes that are not valid JSON escape sequences (e.g. \., \_, \U, windows paths like C:\...)
-      const sanitized = trimmed.replace(/\\([^"\\/bfnrtu])/g, '$1');
+      // Repair invalid JSON escapes without deleting Windows path separators.
+      const sanitized = trimmed.replace(/\\([^"\\/bfnrtu])/g, '\\\\$1');
       return JSON.parse(sanitized);
     } catch {
       try {
@@ -85,53 +120,220 @@ function cleanAndParseJson(jsonString: string): any {
   }
 }
 
-// Helper to extract tool calls from text if native tool_calls is empty
-function extractToolCallsFromText(content: string): { name: string; args: any }[] {
-  const extracted: { name: string; args: any }[] = [];
-  if (!content) return extracted;
+interface NormalizedToolCall {
+  callId: string;
+  name: string;
+  args: Record<string, unknown>;
+}
 
-  // 1. Check for <tool_call>...</tool_call> tags (Qwen / DeepSeek style)
-  const tagRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
-  let match;
-  while ((match = tagRegex.exec(content)) !== null) {
-    const parsed = cleanAndParseJson(match[1]);
-    if (parsed && parsed.name && (parsed.arguments || parsed.args || parsed.parameters)) {
-      extracted.push({
-        name: parsed.name,
-        args: parsed.arguments || parsed.args || parsed.parameters || {}
-      });
-    }
+export interface ToolCallDecodeResult {
+  calls: NormalizedToolCall[];
+  hadCandidates: boolean;
+  errors: string[];
+}
+
+const TOOL_DEFINITIONS = new Map(TOOLS.map(tool => [tool.function.name, tool]));
+let generatedCallId = 0;
+
+function nextCallId(): string {
+  generatedCallId += 1;
+  return `call-${generatedCallId}`;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+interface SchemaShape {
+  type?: string;
+  properties?: Record<string, SchemaShape>;
+  required?: string[];
+}
+
+function validateSchemaValue(value: unknown, schema: SchemaShape, path: string): string[] {
+  if (schema.type === 'string' && typeof value !== 'string') return [`${path} must be a string`];
+  if (schema.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) {
+    return [`${path} must be a finite number`];
   }
-  if (extracted.length > 0) return extracted;
-
-  // 2. Check for markdown code blocks ```json ... ``` or ``` ... ```
-  const blockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
-  while ((match = blockRegex.exec(content)) !== null) {
-    const parsed = cleanAndParseJson(match[1]);
-    if (parsed && parsed.name && (parsed.arguments || parsed.args || parsed.parameters)) {
-      extracted.push({
-        name: parsed.name,
-        args: parsed.arguments || parsed.args || parsed.parameters || {}
-      });
+  if (schema.type === 'boolean' && typeof value !== 'boolean') return [`${path} must be a boolean`];
+  if (schema.type === 'object') {
+    if (!isPlainRecord(value)) return [`${path} must be an object`];
+    const properties = schema.properties ?? {};
+    const errors: string[] = [];
+    for (const required of schema.required ?? []) {
+      if (!(required in value)) errors.push(`${path}.${required} is required`);
     }
-  }
-  if (extracted.length > 0) return extracted;
-
-  // 3. Check for raw JSON object in content
-  const firstBrace = content.indexOf('{');
-  const lastBrace = content.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    const jsonCandidate = content.substring(firstBrace, lastBrace + 1);
-    const parsed = cleanAndParseJson(jsonCandidate);
-    if (parsed && parsed.name && (parsed.arguments || parsed.args || parsed.parameters)) {
-      extracted.push({
-        name: parsed.name,
-        args: parsed.arguments || parsed.args || parsed.parameters || {}
-      });
+    for (const key of Object.keys(value)) {
+      if (!(key in properties)) errors.push(`${path}.${key} is not allowed`);
+      else errors.push(...validateSchemaValue(value[key], properties[key], `${path}.${key}`));
     }
+    return errors;
+  }
+  return [];
+}
+
+function decodeCandidate(candidate: unknown, idHint?: string): ToolCallDecodeResult {
+  if (Array.isArray(candidate)) {
+    const decoded = candidate.map(item => decodeCandidate(item));
+    return {
+      calls: decoded.flatMap(item => item.calls),
+      hadCandidates: candidate.length > 0,
+      errors: decoded.flatMap(item => item.errors)
+    };
+  }
+  if (!isPlainRecord(candidate)) {
+    return { calls: [], hadCandidates: true, errors: ['tool call must be an object'] };
   }
 
-  return extracted;
+  const wrapped = !candidate.name
+    ? candidate.function_call ?? candidate.function ?? candidate.tool
+    : null;
+  if (wrapped) return decodeCandidate(wrapped, typeof candidate.id === 'string' ? candidate.id : idHint);
+
+  const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+  const definition = TOOL_DEFINITIONS.get(name);
+  if (!definition) {
+    return { calls: [], hadCandidates: true, errors: [`unknown tool: ${name || '<missing>'}`] };
+  }
+
+  let args: unknown = candidate.arguments ?? candidate.args ?? candidate.parameters ?? candidate.input ?? {};
+  if (typeof args === 'string') args = cleanAndParseJson(args);
+  const errors = validateSchemaValue(
+    args,
+    definition.function.parameters as SchemaShape,
+    'arguments'
+  );
+  if (errors.length > 0) return { calls: [], hadCandidates: true, errors };
+
+  return {
+    calls: [{
+      callId: idHint || (typeof candidate.id === 'string' && candidate.id.trim()) || nextCallId(),
+      name,
+      args: args as Record<string, unknown>
+    }],
+    hadCandidates: true,
+    errors: []
+  };
+}
+
+export function decodeNativeToolCalls(toolCalls: unknown): ToolCallDecodeResult {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+    return { calls: [], hadCandidates: false, errors: [] };
+  }
+  const decoded = toolCalls.map((toolCall, index) => {
+    if (!isPlainRecord(toolCall)) return decodeCandidate(toolCall);
+    const callId = typeof toolCall.id === 'string' && toolCall.id.trim()
+      ? toolCall.id
+      : `native-${index + 1}-${nextCallId()}`;
+    return decodeCandidate(toolCall.function ?? toolCall, callId);
+  });
+  return {
+    calls: decoded.flatMap(item => item.calls),
+    hadCandidates: true,
+    errors: decoded.flatMap(item => item.errors)
+  };
+}
+
+function decodeJsonSource(source: string): ToolCallDecodeResult {
+  const parsed = cleanAndParseJson(source);
+  return parsed === null
+    ? { calls: [], hadCandidates: true, errors: ['invalid JSON tool call'] }
+    : decodeCandidate(parsed);
+}
+
+/** Only explicit tool tags, a dedicated tool-call fence, or whole-response JSON are executable. */
+export function decodeToolCallsFromText(content: string): ToolCallDecodeResult {
+  const trimmed = content.trim();
+  if (!trimmed) return { calls: [], hadCandidates: false, errors: [] };
+
+  const taggedMatches = [...trimmed.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/gi)];
+  if (taggedMatches.length > 0) {
+    const decoded = taggedMatches.map(match => decodeJsonSource(match[1]));
+    return {
+      calls: decoded.flatMap(item => item.calls),
+      hadCandidates: true,
+      errors: decoded.flatMap(item => item.errors)
+    };
+  }
+
+  const fenced = trimmed.match(/^```(?:tool_call|tool-call|json-tool-call)\s*([\s\S]*?)\s*```$/i);
+  if (fenced) return decodeJsonSource(fenced[1]);
+
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    return decodeJsonSource(trimmed);
+  }
+  return { calls: [], hadCandidates: false, errors: [] };
+}
+
+/** Compatibility helper retained for callers that only need valid decoded calls. */
+export function extractToolCallsFromText(content: string): NormalizedToolCall[] {
+  return decodeToolCallsFromText(content).calls;
+}
+
+interface RecoveryEnvelope {
+  action: NormalizedToolCall | null;
+  completed: boolean;
+  reason: string;
+}
+
+function decodeRecoveryEnvelope(content: string): RecoveryEnvelope | null {
+  const parsed = cleanAndParseJson(content);
+  if (!isPlainRecord(parsed) || typeof parsed.completed !== 'boolean' ||
+      typeof parsed.reason !== 'string' || !('action' in parsed)) return null;
+  if (parsed.action === null) return { action: null, completed: parsed.completed, reason: parsed.reason };
+  const decoded = decodeCandidate(parsed.action);
+  if (decoded.calls.length !== 1 || decoded.errors.length > 0) return null;
+  return { action: decoded.calls[0], completed: parsed.completed, reason: parsed.reason };
+}
+
+function toolSchemasForRecovery(): string {
+  return JSON.stringify(TOOLS.map(tool => ({
+    name: tool.function.name,
+    parameters: tool.function.parameters
+  })));
+}
+
+/**
+ * Goal-classification signals. These MUST stay language-aware: the app is used
+ * in Arabic as well as English (see `estimateTaskTime`). An English-only verb
+ * list silently classifies every Arabic request as non-actionable, which
+ * disables the prose→tool-call recovery net and lets the model "answer" an
+ * action request with a plan while executing nothing.
+ */
+const QUESTION_PREFIX =
+  /^(?:what|why|how|when|where|who|which|whom|explain|describe|tell me about|ما|ماذا|لماذا|كيف|متى|أين|اين|مَن|من|هل|اشرح|اشرحي|صف|عرّف|عرف)\b/i;
+const ENGLISH_ACTION_VERB =
+  /\b(add|create|write|edit|modify|change|delete|remove|rename|move|copy|run|execute|install|build|test|fix|generate|save|make|update|list|read|open|inspect|search|find|check|convert|start|stop)(?:ed|d|s|ing)?\b/;
+const ARABIC_ACTION_VERB =
+  /(?:اصنع|أنشئ|انشئ|أنشِئ|اكتب|أكتب|عدّل|عدل|احذف|امسح|شغّل|شغل|نفّذ|نفذ|ابنِ|ابن|ابني|أضف|اضف|أضِف|غيّر|غير|انقل|انسخ|ثبّت|ثبت|ولّد|ولد|احفظ|اعمل|كوّن|كون|صمّم|صمم|طبّق|طبق|أصلح|اصلح|حدّث|حدث|حوّل|حول|جهّز|اقرأ|ابحث|افتح|اعرض|حلّل|حلل)/;
+/** Anything beyond Latin (Basic + Latin-1 + Latin Extended-A/B) — Arabic, CJK, etc. */
+const NON_LATIN_SCRIPT = /[^ -ɏ]/;
+
+function isActionableRequest(goal: string): boolean {
+  const normalized = goal.trim().toLowerCase();
+  if (!normalized) return false;
+  if (QUESTION_PREFIX.test(normalized) || normalized.endsWith('؟')) return false;
+  if (ENGLISH_ACTION_VERB.test(normalized) || ARABIC_ACTION_VERB.test(normalized)) return true;
+  // A non-Latin request that is not a question can't be judged by the English
+  // verb list, so default to actionable rather than accepting prose and doing
+  // nothing. Recovery attempts are bounded, so a rare false positive is cheap.
+  return NON_LATIN_SCRIPT.test(normalized);
+}
+
+const ENGLISH_MUTATION_VERB =
+  /\b(add|create|write|edit|modify|change|delete|remove|rename|move|copy|install|fix|generate|save|make|update|convert)\b/i;
+const ARABIC_MUTATION_VERB =
+  /(?:اصنع|أنشئ|انشئ|أنشِئ|اكتب|أكتب|عدّل|عدل|احذف|امسح|أضف|اضف|أضِف|غيّر|غير|انقل|انسخ|ثبّت|ثبت|ولّد|ولد|احفظ|اعمل|كوّن|كون|صمّم|صمم|طبّق|طبق|أصلح|اصلح|حدّث|حدث|حوّل|حول|ابنِ|ابن|ابني|جهّز)/;
+
+/** True when the goal asks for a change on disk (create/edit/delete/...), in
+ * either language. Used to require a real mutation before declaring success. */
+function isMutationRequest(goal: string): boolean {
+  return ENGLISH_MUTATION_VERB.test(goal) || ARABIC_MUTATION_VERB.test(goal);
+}
+
+function requestsShellExecution(goal: string): boolean {
+  return /\b(powershell|terminal|shell|command(?: prompt)?|cmd(?:\.exe)?)\b/i.test(goal);
 }
 
 /** Extracts a readable message from an unknown thrown value. */
@@ -140,7 +342,7 @@ function toErrorMessage(error: unknown): string {
   return String(error);
 }
 
-function getActionDescription(toolName: string, toolArgs: any): string {
+function getActionDescription(toolName: string, toolArgs: Record<string, unknown>): string {
   switch (toolName) {
     case 'write_file':
       return `Creating / writing file: "${toolArgs?.filePath || 'file'}"...`;
@@ -148,6 +350,12 @@ function getActionDescription(toolName: string, toolArgs: any): string {
       return `Reading file: "${toolArgs?.filePath || 'file'}"...`;
     case 'edit_file':
       return `Editing code in: "${toolArgs?.filePath || 'file'}"...`;
+    case 'copy_file':
+      return `Copying "${toolArgs?.sourcePath || 'source'}" to "${toolArgs?.destinationPath || 'destination'}"...`;
+    case 'move_file':
+      return `Moving "${toolArgs?.sourcePath || 'source'}" to "${toolArgs?.destinationPath || 'destination'}"...`;
+    case 'delete_file':
+      return `Deleting: "${toolArgs?.filePath || 'file'}"...`;
     case 'run_command':
       return `Executing command: \`${toolArgs?.command || ''}\`...`;
     case 'list_directory':
@@ -190,6 +398,10 @@ interface RunState {
   filesTouched: string[];
   commands: { command: string; ok: boolean }[];
   verifications: VerificationResult[];
+  successfulMutations: number;
+  successfulToolCalls: number;
+  failedToolCalls: number;
+  pendingAction: NormalizedToolCall | null;
   /** Last free-text answer from the model, reused as walkthrough notes. */
   finalText?: string;
 }
@@ -214,6 +426,49 @@ function buildPhaseMessages(
   ];
 }
 
+function toModelMessages(messages: Message[]): NonStreamingChatRequest['messages'] {
+  return messages.map(message => {
+    const modelMessage: OllamaMessage = { role: message.role, content: message.content };
+    if (message.images?.length) modelMessage.images = message.images;
+    // Our ToolCall allows `arguments` to be a JSON string (Ollama sometimes
+    // returns it that way); Ollama's type wants an object. The value is passed
+    // straight back to the model, so cast at this boundary rather than reshape.
+    if (message.tool_calls) modelMessage.tool_calls = message.tool_calls as unknown as OllamaToolCall[];
+    if (message.role === 'tool' && message.name) modelMessage.tool_name = message.name;
+    return modelMessage;
+  });
+}
+
+async function recoverActionFromProse(
+  config: AgentConfig,
+  messages: Message[],
+  run: RunState,
+  phase: PromptPhase,
+  iteration: number,
+  runtime: AgentRuntime,
+  rawContent: string,
+  decodeErrors: string[]
+): Promise<RecoveryEnvelope | null> {
+  const diagnostic = decodeErrors.length > 0
+    ? `The previous action candidate was invalid: ${decodeErrors.join('; ')}.`
+    : 'The previous response was actionable prose but contained no valid explicit tool call.';
+  const recoveryPrompt = [
+    diagnostic,
+    `Goal: ${run.goal}`,
+    `Previous response: ${rawContent}`,
+    `Available tool schemas: ${toolSchemasForRecovery()}`,
+    'Return one schema-conforming JSON object. Set action to exactly one validated next tool call, or null.',
+    'Set completed=true only when the user request is already satisfied by successful tool results.',
+    'Never translate incidental JSON quoted in prose into an action.'
+  ].join('\n');
+  const response = await runtime.modelClient.recoverAction({
+    model: config.model,
+    messages: toModelMessages([...messages, { role: 'user', content: recoveryPrompt }]),
+    options: { num_ctx: MODEL_CONTEXT_TOKENS, temperature: 0 }
+  }, { phase, iteration }, ACTION_RECOVERY_SCHEMA as unknown as Record<string, unknown>);
+  return decodeRecoveryEnvelope(response.message?.content ?? '');
+}
+
 /**
  * The tool-calling loop. Used for both the execution and verification phases;
  * `phase` only changes which system prompt was baked into `history`.
@@ -223,7 +478,8 @@ async function* runToolLoop(
   history: Message[],
   run: RunState,
   phase: PromptPhase,
-  maxIterations: number
+  maxIterations: number,
+  runtime: AgentRuntime
 ): AsyncGenerator<AgentUpdate, 'ok' | 'error' | 'halted', unknown> {
 
   const workspacePath = config.workspacePath;
@@ -233,6 +489,7 @@ async function* runToolLoop(
   const messages: Message[] = [...history];
 
   let iteration = 0;
+  let recoveryAttempts = 0;
 
   while (iteration < maxIterations) {
     iteration++;
@@ -258,28 +515,15 @@ async function* runToolLoop(
 
     try {
       // 1. Call Ollama Chat Completions (with multimodal images support)
-      const response = await ollama.chat({
+      const response = await runtime.modelClient.chat({
         model: config.model,
-        messages: messages.map(m => {
-          const msgObj: any = {
-            role: m.role,
-            content: m.content
-          };
-          if (m.images && Array.isArray(m.images) && m.images.length > 0) {
-            msgObj.images = m.images;
-          }
-          if (m.tool_calls) {
-            msgObj.tool_calls = m.tool_calls;
-          }
-          return msgObj;
-        }),
-        tools: TOOLS as any,
+        messages: toModelMessages(messages),
+        tools: TOOLS,
         options: {
-          num_ctx: 4096, // Highly optimized context size for 2x faster local generation
-          temperature: 0.1
+          num_ctx: MODEL_CONTEXT_TOKENS,
+          temperature: MODEL_TEMPERATURE
         }
-      });
-
+      }, { phase, iteration });
       const assistantMessage = response.message;
       const rawContent = assistantMessage.content || '';
 
@@ -287,7 +531,7 @@ async function* runToolLoop(
       messages.push({
         role: 'assistant',
         content: rawContent,
-        tool_calls: assistantMessage.tool_calls as any
+        tool_calls: assistantMessage.tool_calls as Message['tool_calls']
       });
 
       // 1b. Track plan progress from TASK:/DONE:/BLOCKED: markers in the reply
@@ -314,23 +558,79 @@ async function* runToolLoop(
         }
       }
 
-      // 2. Identify tool calls (native or extracted from text)
-      let callsToExecute: { name: string; args: any }[] = [];
+      // 2. Decode native calls first. Invalid native calls may fall back only to
+      // explicit text containers, then to one constrained recovery request.
+      const nativeDecoded = decodeNativeToolCalls(assistantMessage.tool_calls);
+      const textDecoded = nativeDecoded.calls.length > 0
+        ? { calls: [], hadCandidates: false, errors: [] }
+        : decodeToolCallsFromText(rawContent);
+      let callsToExecute = nativeDecoded.calls.length > 0
+        ? nativeDecoded.calls
+        : textDecoded.calls;
+      let recoveryCompleted = false;
+      const decodeErrors = [...nativeDecoded.errors, ...textDecoded.errors];
+      // A drafted or approved plan means real work is expected, even when the
+      // original goal reads as a noun phrase ("a tic-tac-toe game") with no
+      // action verb. Without this, the model can answer the execution turn with
+      // plan prose and the run would end having executed nothing.
+      const actionableGoal =
+        phase === 'execute' && (isActionableRequest(run.goal) || run.taskGroups.length > 0);
+      const nativePathNeedsRecovery = callsToExecute.length === 0 && (
+        decodeErrors.length > 0 ||
+        (actionableGoal && run.successfulToolCalls === 0) ||
+        run.pendingAction !== null
+      );
+      const shouldRecover = phase === 'execute' && (nativePathNeedsRecovery || (
+        actionableGoal &&
+        run.successfulToolCalls > 0 &&
+        callsToExecute.length === 0 &&
+        rawContent.length > 0
+      ));
 
-      if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-        for (const tc of assistantMessage.tool_calls) {
-          let toolArgs = tc.function.arguments;
-          if (typeof toolArgs === 'string') {
-            toolArgs = cleanAndParseJson(toolArgs) || {};
-          }
-          callsToExecute.push({ name: tc.function.name, args: toolArgs || {} });
+      if (shouldRecover && recoveryAttempts < MAX_ACTION_RECOVERY_ATTEMPTS) {
+        recoveryAttempts += 1;
+        const recovery = await recoverActionFromProse(
+          config,
+          messages,
+          run,
+          phase,
+          iteration,
+          runtime,
+          rawContent,
+          decodeErrors
+        );
+        if (recovery?.action) {
+          callsToExecute = [recovery.action];
+          run.pendingAction = recovery.action;
+        } else if (recovery?.completed && run.successfulToolCalls > 0 && run.failedToolCalls === 0) {
+          recoveryCompleted = true;
+          run.pendingAction = null;
         }
-      } else {
-        // Try fallback extraction
-        const fallbackCalls = extractToolCallsFromText(rawContent);
-        if (fallbackCalls.length > 0) {
-          callsToExecute = fallbackCalls;
+      }
+
+      if (
+        phase === 'execute' &&
+        callsToExecute.length > 0 &&
+        requestsShellExecution(run.goal) &&
+        !callsToExecute.some(call => call.name === 'run_command')
+      ) {
+        if (recoveryAttempts < MAX_ACTION_RECOVERY_ATTEMPTS && iteration < maxIterations) {
+          recoveryAttempts += 1;
+          run.pendingAction = callsToExecute[0];
+          messages.push({
+            role: 'user',
+            content:
+              'The user explicitly requested shell execution. Call run_command now with a workspace-relative PowerShell command. Do not substitute a file tool.'
+          });
+          continue;
         }
+        yield {
+          type: 'error',
+          content: `Model ${config.model} did not produce the requested run_command tool call. Nothing was executed.`,
+          runStatus: 'failed',
+          phase
+        };
+        return 'error';
       }
 
       // 3. Execute detected tool calls
@@ -338,6 +638,8 @@ async function* runToolLoop(
         for (const toolCall of callsToExecute) {
           const toolName = toolCall.name;
           const toolArgs = toolCall.args;
+          const callId = toolCall.callId;
+          run.pendingAction = toolCall;
           const actionMsg = getActionDescription(toolName, toolArgs);
 
           // 3a. Permission gate (Terminal Command Auto Execution policy)
@@ -347,6 +649,7 @@ async function* runToolLoop(
             yield {
               type: 'permission_denied',
               name: toolName,
+              callId,
               args: toolArgs,
               permission,
               content: permission.reason,
@@ -356,8 +659,10 @@ async function* runToolLoop(
             messages.push({
               role: 'tool',
               name: toolName,
-              content: `REFUSED: ${permission.reason} Choose a safer approach; do not retry this command.`
+              content: `REFUSED [${callId}]: ${permission.reason} Choose a safer approach; do not retry this command.`
             });
+            run.failedToolCalls += 1;
+            run.pendingAction = null;
             continue;
           }
 
@@ -365,6 +670,7 @@ async function* runToolLoop(
             yield {
               type: 'awaiting_review',
               name: toolName,
+              callId,
               args: toolArgs,
               permission,
               content: permission.reason,
@@ -392,6 +698,7 @@ async function* runToolLoop(
           yield {
             type: 'tool_call',
             name: toolName,
+            callId,
             args: toolArgs,
             estimatedTime: estimatedTime,
             phase
@@ -399,15 +706,27 @@ async function* runToolLoop(
 
           // Execute tool on disk with duration measurement
           const startTime = Date.now();
-          const result = await executeTool(toolName, toolArgs, workspacePath);
+          const result = await runtime.executeTool(toolName, toolArgs, workspacePath);
           const duration = Date.now() - startTime;
 
+          if (result.ok) {
+            run.successfulToolCalls += 1;
+            run.pendingAction = null;
+          } else {
+            run.failedToolCalls += 1;
+          }
           recordToolEffect(run, toolName, toolArgs, result);
 
           yield {
             type: 'tool_result',
             name: toolName,
-            result: result,
+            callId,
+            result,
+            resultStatus: result.ok ? 'succeeded' : 'failed',
+            mutationRevision: result.effects.some(effect => effect.workspaceChanged)
+              ? run.successfulMutations
+              : undefined,
+            affectedFiles: result.effects.flatMap(effect => effect.paths),
             duration: duration,
             estimatedTime: estimatedTime,
             phase
@@ -415,7 +734,7 @@ async function* runToolLoop(
 
           yield {
             type: 'thinking',
-            content: `Completed: ${toolName} (${(duration / 1000).toFixed(2)}s). Analyzing output...`,
+            content: `${result.ok ? 'Completed' : 'Failed'}: ${toolName} (${(duration / 1000).toFixed(2)}s). Analyzing output...`,
             estimatedTime: estimatedTime,
             phase
           };
@@ -424,7 +743,13 @@ async function* runToolLoop(
           messages.push({
             role: 'tool',
             name: toolName,
-            content: result
+            content: JSON.stringify({
+              callId,
+              ok: result.ok,
+              output: result.output,
+              error: result.error ?? null,
+              effects: result.effects
+            })
           });
         }
 
@@ -432,7 +757,31 @@ async function* runToolLoop(
         continue;
       }
 
-      // 4. No tools called. This is the final response.
+      // 4. Completion is valid only after successful tool work, or when no action
+      // was requested. Recovery state survives iterations until that is true.
+      if (phase === 'execute' && (isActionableRequest(run.goal) || run.taskGroups.length > 0)) {
+        const mutationGoal = isMutationRequest(run.goal);
+        const completionSatisfied = run.successfulToolCalls > 0 &&
+          (!mutationGoal || run.successfulMutations > 0) &&
+          run.pendingAction === null;
+        if (!completionSatisfied && !recoveryCompleted) {
+          if (recoveryAttempts < MAX_ACTION_RECOVERY_ATTEMPTS && iteration < maxIterations) {
+            messages.push({
+              role: 'user',
+              content: 'The request is not complete. Continue with one validated tool call; do not claim success from prose or a failed tool result.'
+            });
+            continue;
+          }
+          yield {
+            type: 'error',
+            content: `Model ${config.model} did not complete the requested action with a successful tool result.`,
+            runStatus: 'failed',
+            phase
+          };
+          return 'error';
+        }
+      }
+
       if (rawContent) {
         run.finalText = rawContent;
         yield { type: 'text', content: rawContent, estimatedTime: estimatedTime, phase };
@@ -460,25 +809,28 @@ async function* runToolLoop(
   return 'error';
 }
 
-/** Records file writes and executed commands so the walkthrough can list them. */
+/** Records only executor-confirmed effects; failures never advance completion state. */
 function recordToolEffect(
   run: RunState,
   toolName: string,
   args: Record<string, unknown> | undefined,
-  result: string
+  result: ToolExecutionResult
 ): void {
-  if (toolName === 'write_file' || toolName === 'edit_file') {
-    const filePath = typeof args?.filePath === 'string' ? args.filePath : null;
-    if (filePath && !run.filesTouched.includes(filePath)) {
-      run.filesTouched.push(filePath);
+  if (!result.ok) return;
+
+  for (const effect of result.effects) {
+    if (effect.workspaceChanged) {
+      for (const filePath of effect.paths) {
+        if (filePath && !run.filesTouched.includes(filePath)) run.filesTouched.push(filePath);
+      }
+      run.successfulMutations += 1;
     }
-    return;
   }
 
   if (toolName === 'run_command') {
     const command = typeof args?.command === 'string' ? args.command : null;
-    if (command) {
-      run.commands.push({ command, ok: !/^error/i.test(result.trim()) });
+    if (command && !run.commands.some(item => item.command === command)) {
+      run.commands.push({ command, ok: true });
     }
   }
 }
@@ -494,7 +846,8 @@ function recordToolEffect(
 async function* runPlanningPhase(
   config: AgentConfig,
   history: Message[],
-  run: RunState
+  run: RunState,
+  runtime: AgentRuntime
 ): AsyncGenerator<AgentUpdate, 'continue' | 'awaiting-review' | 'failed', unknown> {
   const { estimatedTime } = run;
 
@@ -517,11 +870,11 @@ async function* runPlanningPhase(
   let planMarkdown = '';
   try {
     // No `tools` here on purpose: the planning turn must return prose only.
-    const response = await ollama.chat({
+    const response = await runtime.modelClient.chat({
       model: config.model,
       messages: messages.map(m => ({ role: m.role, content: m.content, images: m.images })),
-      options: { num_ctx: 4096, temperature: 0.2 }
-    });
+      options: { num_ctx: MODEL_CONTEXT_TOKENS, temperature: PLANNING_TEMPERATURE }
+    }, { phase: 'plan', iteration: 0 });
     planMarkdown = response.message?.content?.trim() || '';
   } catch (error) {
     yield {
@@ -598,7 +951,8 @@ async function* runPlanningPhase(
  */
 async function* runVerificationPhase(
   config: AgentConfig,
-  run: RunState
+  run: RunState,
+  runtime: AgentRuntime
 ): AsyncGenerator<AgentUpdate, void, unknown> {
   const commands = extractVerificationCommands(run.taskGroups);
   if (commands.length === 0) return;
@@ -642,18 +996,28 @@ async function* runVerificationPhase(
     };
 
     const startTime = Date.now();
-    const output = await executeTool('run_command', { command }, config.workspacePath);
+    const executionResult = await runtime.executeTool(
+      'run_command',
+      { command },
+      config.workspacePath
+    );
     const duration = Date.now() - startTime;
-    const passed = !/(^|\n)\s*error/i.test(output) && !/exit code [1-9]/i.test(output);
+    const passed = executionResult.ok;
 
-    run.commands.push({ command, ok: passed });
-    const result: VerificationResult = { label: command, command, passed, output };
+    if (passed) recordToolEffect(run, 'run_command', { command }, executionResult);
+    const result: VerificationResult = {
+      label: command,
+      command,
+      passed,
+      output: executionResult.output
+    };
     run.verifications.push(result);
 
     yield {
       type: 'tool_result',
       name: 'run_command',
-      result: output,
+      result: executionResult,
+      resultStatus: executionResult.ok ? 'succeeded' : 'failed',
       duration,
       phase: 'verify',
       estimatedTime: run.estimatedTime
@@ -681,7 +1045,8 @@ async function* runVerificationPhase(
  */
 export async function* runAgent(
   config: AgentConfig,
-  history: Message[]
+  history: Message[],
+  runtime: AgentRuntime = DEFAULT_RUNTIME
 ): AsyncGenerator<AgentUpdate, void, unknown> {
   const maxIterations = config.maxIterations || 8;
   const settings = resolveSettings(config.settings);
@@ -699,13 +1064,17 @@ export async function* runAgent(
     taskGroups: config.approvedPlan?.taskGroups ?? [],
     filesTouched: [],
     commands: [],
-    verifications: []
+    verifications: [],
+    successfulMutations: 0,
+    successfulToolCalls: 0,
+    failedToolCalls: 0,
+    pendingAction: null
   };
 
   try {
     // PHASE 1 — Planning (skipped in Fast Mode or when a plan is already approved)
     if (settings.executionMode === 'planning' && !config.approvedPlan) {
-      const outcome = yield* runPlanningPhase(config, history, run);
+      const outcome = yield* runPlanningPhase(config, history, run, runtime);
       if (outcome !== 'continue') return;
     }
 
@@ -716,7 +1085,8 @@ export async function* runAgent(
       executionMessages,
       run,
       'execute',
-      maxIterations
+      maxIterations,
+      runtime
     );
     // `halted` means a command is waiting on the user; the `done` event was
     // already emitted, so stop here without a walkthrough.
@@ -724,10 +1094,15 @@ export async function* runAgent(
 
     // PHASE 3 — Verification (Planning Mode only; needs a plan to know what to run)
     if (settings.executionMode === 'planning' && run.taskGroups.length > 0) {
-      yield* runVerificationPhase(config, run);
+      yield* runVerificationPhase(config, run, runtime);
     }
 
     // PHASE 4 — Walkthrough
+    // Antigravity closes every run that actually changed something with a
+    // verifiable Walkthrough. Planning Mode always leaves one (it has a plan to
+    // summarise); Fast Mode leaves one too, but only when the agent did real
+    // work — a plain answer to a question needs no walkthrough.
+    const didWork = run.filesTouched.length > 0 || run.commands.length > 0;
     if (settings.executionMode === 'planning' && run.plan) {
       // Any image or video the agent generated becomes walkthrough media.
       const media = collectMediaFromFiles(run.filesTouched);
@@ -746,6 +1121,26 @@ export async function* runAgent(
         artifact: walkthrough,
         phase: 'verify',
         progress: computeProgress(run.taskGroups),
+        runStatus: 'completed',
+        estimatedTime
+      };
+    } else if (didWork) {
+      // Fast Mode: no plan and no verification phase, so the walkthrough is a
+      // straight record of what changed and what ran. `createWalkthrough`
+      // renders an honest "not verified" summary when no checks were run.
+      const media = collectMediaFromFiles(run.filesTouched);
+      const walkthrough = createWalkthrough({
+        goal: run.goal,
+        filesTouched: run.filesTouched,
+        commands: run.commands,
+        verifications: run.verifications,
+        media: media.length > 0 ? media : undefined,
+        notes: run.finalText
+      });
+      yield {
+        type: 'artifact',
+        artifact: walkthrough,
+        phase: 'execute',
         runStatus: 'completed',
         estimatedTime
       };
