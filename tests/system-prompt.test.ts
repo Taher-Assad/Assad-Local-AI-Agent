@@ -6,7 +6,9 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   EXECUTION_PROMPT,
   FAST_EXECUTION_PROMPT,
+  MULTIMODAL_PROMPT,
   PLANNING_PROMPT,
+  turnInvolvesImages,
   VERIFICATION_PROMPT
 } from '../src/lib/agent/system-prompt.ts';
 import { DEFAULT_AGENT_SETTINGS } from '../src/lib/agent/permissions.ts';
@@ -98,5 +100,32 @@ describe('buildSystemPrompt', () => {
 
     const auto = buildSystemPrompt({ settings: settings() });
     assert.ok(!/may be held for user approval/.test(auto));
+  });
+
+  it('omits the multimodal guidance by default and includes it on request', () => {
+    const withoutImages = buildSystemPrompt({ settings: settings() });
+    assert.ok(!withoutImages.includes(MULTIMODAL_PROMPT));
+    assert.ok(!/IMAGE CAPABILITIES/.test(withoutImages));
+
+    const withImages = buildSystemPrompt({ settings: settings(), includeMultimodal: true });
+    assert.ok(withImages.includes(MULTIMODAL_PROMPT));
+    assert.match(withImages, /IMAGE CAPABILITIES/);
+  });
+});
+
+describe('turnInvolvesImages', () => {
+  it('is true when the turn has attached images', () => {
+    assert.equal(turnInvolvesImages({ hasAttachedImages: true }), true);
+  });
+
+  it('is true for image-related goals in English and Arabic', () => {
+    assert.equal(turnInvolvesImages({ goal: 'resize the screenshot and add a logo' }), true);
+    assert.equal(turnInvolvesImages({ goal: 'generate a chart of the results' }), true);
+    assert.equal(turnInvolvesImages({ goal: 'أنشئ صورة للعبة' }), true);
+  });
+
+  it('is false for a plain coding goal with no image involvement', () => {
+    assert.equal(turnInvolvesImages({ goal: 'add pagination to the users API endpoint' }), false);
+    assert.equal(turnInvolvesImages({}), false);
   });
 });

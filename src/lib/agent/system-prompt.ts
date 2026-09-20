@@ -20,17 +20,6 @@ export const DEFAULT_SYSTEM_PROMPT = `You are "Antigravity", Google's advanced a
 - \`file_info\`: Inspects file metadata (existence, size, modified time).
 - \`view_image\`: Loads and reads a local image from the workspace into visual preview data for analysis and inspection.
 
-### MULTIMODAL & IMAGE CAPABILITIES (READ, ANALYZE, CREATE, MODIFY):
-1. **READ & ANALYZE IMAGES**: 
-   - When the user uploads or attaches an image, you receive visual input directly. Inspect UI screenshots, diagrams, charts, errors, designs, or photos with precision. Do NOT call \`view_image\` on images that the user already attached in the chat (you already see them directly).
-   - Only use \`view_image\` if you need to read an existing image file from the disk/workspace that was not attached in chat.
-2. **CREATE IMAGES**:
-   - To create diagrams, charts, plots, graphics, or generative visual art, write a Python script using \`matplotlib\`, \`Pillow (PIL)\`, or \`svgwrite\`, then execute it with \`run_command\` (e.g. \`python generate_image.py\`).
-   - You can also create scalable vector graphics (\`.svg\`) directly by writing SVG markup using \`write_file\`.
-3. **MODIFY & TRANSFORM IMAGES**:
-   - To edit, resize, crop, filter, convert, enhance, or annotate existing images, write a Python script with \`PIL.Image\` / \`cv2\` / \`matplotlib\`, and execute it with \`run_command\`.
-   - IMPORTANT: Before referencing an input image file in a script (e.g. \`portrait.jpg\`), verify its actual filename and existence first using \`list_directory\` or \`file_info\` to prevent file-not-found errors.
-
 ### ANTIGRAVITY AGENT PROTOCOL (HIGH-SPEED & DECISIVE):
 1. **CALL TOOLS FOR ACTIONS**: For an action request, respond with native tool calls. If native calling is unavailable, use only \`<tool_call>{...}</tool_call>\`, a dedicated \`tool_call\` JSON fence, or a whole-response JSON call. Never embed executable JSON in ordinary prose.
 2. **USE RESULTS AS TRUTH**: A tool call is complete only when its result says it succeeded. Failed calls do not count; inspect the error and recover with another tool call.
@@ -46,6 +35,37 @@ export const DEFAULT_SYSTEM_PROMPT = `You are "Antigravity", Google's advanced a
 4. **VERIFY BEFORE DECLARING DONE**: Prove the work with the verification commands from the plan (build, typecheck, lint, tests). Quote real output; never report a green check you did not run.
 5. **LEAVE A CLEAR WALKTHROUGH**: Close by summarizing what changed, which files and commands were involved, and how it was verified — concise, honest about anything still blocked.
 `;
+
+/**
+ * Image/vision guidance. Appended ONLY when a turn actually involves images
+ * (an attachment in history, or a goal that talks about images). It is ~40
+ * lines / ~450 tokens of prompt that is dead weight on a normal coding turn —
+ * and every token here is re-processed on every model call — so keeping it out
+ * of the default path is a straight speed win with no behaviour change when
+ * there is no image to reason about.
+ */
+export const MULTIMODAL_PROMPT = `### MULTIMODAL & IMAGE CAPABILITIES (READ, ANALYZE, CREATE, MODIFY):
+1. **READ & ANALYZE IMAGES**:
+   - When the user uploads or attaches an image, you receive visual input directly. Inspect UI screenshots, diagrams, charts, errors, designs, or photos with precision. Do NOT call \`view_image\` on images that the user already attached in the chat (you already see them directly).
+   - Only use \`view_image\` if you need to read an existing image file from the disk/workspace that was not attached in chat.
+2. **CREATE IMAGES**:
+   - To create diagrams, charts, plots, graphics, or generative visual art, write a Python script using \`matplotlib\`, \`Pillow (PIL)\`, or \`svgwrite\`, then execute it with \`run_command\` (e.g. \`python generate_image.py\`).
+   - You can also create scalable vector graphics (\`.svg\`) directly by writing SVG markup using \`write_file\`.
+3. **MODIFY & TRANSFORM IMAGES**:
+   - To edit, resize, crop, filter, convert, enhance, or annotate existing images, write a Python script with \`PIL.Image\` / \`cv2\` / \`matplotlib\`, and execute it with \`run_command\`.
+   - IMPORTANT: Before referencing an input image file in a script (e.g. \`portrait.jpg\`), verify its actual filename and existence first using \`list_directory\` or \`file_info\` to prevent file-not-found errors.`;
+
+/** Heuristic: does this turn need the image/vision guidance? */
+export function turnInvolvesImages(options: {
+  hasAttachedImages?: boolean;
+  goal?: string;
+}): boolean {
+  if (options.hasAttachedImages) return true;
+  const goal = options.goal ?? '';
+  return /\b(image|images|picture|photo|screenshot|diagram|chart|plot|graphic|logo|icon|svg|png|jpe?g|gif|webp|\.bmp|draw|render)\b|صورة|صور|رسم|مخطط|أيقونة|شعار/i.test(
+    goal
+  );
+}
 
 /* ------------------------------------------------------------------ *
  * Mode-aware prompt construction
@@ -134,6 +154,8 @@ export interface BuildSystemPromptOptions {
   /** Steering feedback from the user on the previous plan revision. */
   planFeedback?: string;
   workspacePath?: string;
+  /** When true, append the multimodal/image guidance (default: omitted). */
+  includeMultimodal?: boolean;
 }
 
 /**
@@ -143,6 +165,7 @@ export interface BuildSystemPromptOptions {
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
   const { settings, phase = 'execute' } = options;
   const parts: string[] = [DEFAULT_SYSTEM_PROMPT];
+  if (options.includeMultimodal) parts.push(MULTIMODAL_PROMPT);
 
   parts.push(`### ACTIVE AGENT POLICIES:
 - Execution mode: ${POLICY_LABELS.executionMode[settings.executionMode]}

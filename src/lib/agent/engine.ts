@@ -22,7 +22,7 @@ import {
 import type { VerificationResult } from './artifacts.ts';
 import { evaluateToolPermission, resolveSettings, requiresPlanApproval } from './permissions.ts';
 import { collectMediaFromFiles } from './capture.ts';
-import { buildSystemPrompt, type PromptPhase } from './system-prompt.ts';
+import { buildSystemPrompt, turnInvolvesImages, type PromptPhase } from './system-prompt.ts';
 import { defaultModelClient, type ModelClient, type NonStreamingChatRequest } from './model-client.ts';
 import type { Message as OllamaMessage, ToolCall as OllamaToolCall } from 'ollama';
 import {
@@ -30,7 +30,8 @@ import {
   MAX_ACTION_RECOVERY_ATTEMPTS,
   MODEL_CONTEXT_TOKENS,
   MODEL_TEMPERATURE,
-  PLANNING_TEMPERATURE
+  PLANNING_TEMPERATURE,
+  resolveToolCallMode
 } from './config.ts';
 
 export interface AgentRuntime {
@@ -426,12 +427,17 @@ function buildPhaseMessages(
   run: RunState,
   phase: PromptPhase
 ): Message[] {
+  const hasAttachedImages = history.some(m => m.images && m.images.length > 0);
   const systemPrompt = buildSystemPrompt({
     settings: run.settings,
     phase,
     approvedPlanBody: run.plan?.body,
     planFeedback: config.planFeedback,
-    workspacePath: config.workspacePath
+    workspacePath: config.workspacePath,
+    // Only spend the ~450-token image guidance when the turn is actually about
+    // images; a normal coding turn re-processes it on every model call for
+    // nothing. See turnInvolvesImages / MULTIMODAL_PROMPT.
+    includeMultimodal: turnInvolvesImages({ hasAttachedImages, goal: run.goal })
   });
   return [
     { role: 'system', content: systemPrompt },
@@ -497,6 +503,11 @@ async function* runToolLoop(
 
   const workspacePath = config.workspacePath;
   const estimatedTime = run.estimatedTime;
+  // 'native' (Ollama function-calling) or 'schema' (grammar-constrained JSON
+  // envelope — one tool call per turn, structurally impossible to malform).
+  const toolMode = config.toolCallMode
+    ? resolveToolCallMode(config.model, config.toolCallMode)
+    : resolveToolCallMode(config.model);
 
   // The caller already prefixed the phase-specific system prompt.
   const messages: Message[] = [...history];
@@ -527,16 +538,25 @@ async function* runToolLoop(
     }
 
     try {
-      // 1. Call Ollama Chat Completions (with multimodal images support)
-      const response = await runtime.modelClient.chat({
+      // 1. Ask the model for its next step. In native mode we expose the tools
+      // and let Ollama function-call; in schema mode we drop the tools and
+      // constrain the whole reply to the action envelope (grammar-constrained
+      // decoding) so a small model cannot emit a structurally invalid call.
+      const request: NonStreamingChatRequest = {
         model: config.model,
         messages: toModelMessages(messages),
-        tools: TOOLS,
         options: {
           num_ctx: MODEL_CONTEXT_TOKENS,
           temperature: MODEL_TEMPERATURE
         }
-      }, { phase, iteration });
+      };
+      const response = toolMode === 'schema'
+        ? await runtime.modelClient.recoverAction(
+            request,
+            { phase, iteration },
+            ACTION_RECOVERY_SCHEMA as unknown as Record<string, unknown>
+          )
+        : await runtime.modelClient.chat({ ...request, tools: TOOLS }, { phase, iteration });
       const assistantMessage = response.message;
       const rawContent = assistantMessage.content || '';
 
@@ -571,53 +591,78 @@ async function* runToolLoop(
         }
       }
 
-      // 2. Decode native calls first. Invalid native calls may fall back only to
-      // explicit text containers, then to one constrained recovery request.
-      const nativeDecoded = decodeNativeToolCalls(assistantMessage.tool_calls);
-      const textDecoded = nativeDecoded.calls.length > 0
-        ? { calls: [], hadCandidates: false, errors: [] }
-        : decodeToolCallsFromText(rawContent);
-      let callsToExecute = nativeDecoded.calls.length > 0
-        ? nativeDecoded.calls
-        : textDecoded.calls;
+      // 2. Decode the model's next action for the active tool-call mode.
+      let callsToExecute: NormalizedToolCall[];
       let recoveryCompleted = false;
-      const decodeErrors = [...nativeDecoded.errors, ...textDecoded.errors];
-      // A drafted or approved plan means real work is expected, even when the
-      // original goal reads as a noun phrase ("a tic-tac-toe game") with no
-      // action verb. Without this, the model can answer the execution turn with
-      // plan prose and the run would end having executed nothing.
-      const actionableGoal =
-        phase === 'execute' && (isActionableRequest(run.goal) || run.taskGroups.length > 0);
-      const nativePathNeedsRecovery = callsToExecute.length === 0 && (
-        decodeErrors.length > 0 ||
-        (actionableGoal && run.successfulToolCalls === 0) ||
-        run.pendingAction !== null
-      );
-      const shouldRecover = phase === 'execute' && (nativePathNeedsRecovery || (
-        actionableGoal &&
-        run.successfulToolCalls > 0 &&
-        callsToExecute.length === 0 &&
-        rawContent.length > 0
-      ));
 
-      if (shouldRecover && recoveryAttempts < MAX_ACTION_RECOVERY_ATTEMPTS) {
-        recoveryAttempts += 1;
-        const recovery = await recoverActionFromProse(
-          config,
-          messages,
-          run,
-          phase,
-          iteration,
-          runtime,
-          rawContent,
-          decodeErrors
+      if (toolMode === 'schema') {
+        // The whole response is the constrained envelope, so decode it directly:
+        // it is either exactly one valid action or a completion. No native/text
+        // fallback and no extra prose-recovery round-trip are needed — that
+        // recovery round-trip is precisely what schema mode exists to avoid.
+        const envelope = decodeRecoveryEnvelope(rawContent);
+        if (envelope?.action) {
+          callsToExecute = [envelope.action];
+          run.pendingAction = envelope.action;
+        } else {
+          callsToExecute = [];
+          if (envelope?.completed && run.successfulToolCalls > 0 && run.failedToolCalls === 0) {
+            recoveryCompleted = true;
+            run.pendingAction = null;
+          }
+          // An unparseable / action-less envelope leaves callsToExecute empty;
+          // the shared completion gate below decides whether to nudge-and-retry
+          // or fail, exactly as it does when native decoding yields nothing.
+        }
+      } else {
+        // 2a. Native path: decode native calls first. Invalid native calls may
+        // fall back only to explicit text containers, then to one constrained
+        // recovery request.
+        const nativeDecoded = decodeNativeToolCalls(assistantMessage.tool_calls);
+        const textDecoded = nativeDecoded.calls.length > 0
+          ? { calls: [], hadCandidates: false, errors: [] }
+          : decodeToolCallsFromText(rawContent);
+        callsToExecute = nativeDecoded.calls.length > 0
+          ? nativeDecoded.calls
+          : textDecoded.calls;
+        const decodeErrors = [...nativeDecoded.errors, ...textDecoded.errors];
+        // A drafted or approved plan means real work is expected, even when the
+        // original goal reads as a noun phrase ("a tic-tac-toe game") with no
+        // action verb. Without this, the model can answer the execution turn with
+        // plan prose and the run would end having executed nothing.
+        const actionableGoal =
+          phase === 'execute' && (isActionableRequest(run.goal) || run.taskGroups.length > 0);
+        const nativePathNeedsRecovery = callsToExecute.length === 0 && (
+          decodeErrors.length > 0 ||
+          (actionableGoal && run.successfulToolCalls === 0) ||
+          run.pendingAction !== null
         );
-        if (recovery?.action) {
-          callsToExecute = [recovery.action];
-          run.pendingAction = recovery.action;
-        } else if (recovery?.completed && run.successfulToolCalls > 0 && run.failedToolCalls === 0) {
-          recoveryCompleted = true;
-          run.pendingAction = null;
+        const shouldRecover = phase === 'execute' && (nativePathNeedsRecovery || (
+          actionableGoal &&
+          run.successfulToolCalls > 0 &&
+          callsToExecute.length === 0 &&
+          rawContent.length > 0
+        ));
+
+        if (shouldRecover && recoveryAttempts < MAX_ACTION_RECOVERY_ATTEMPTS) {
+          recoveryAttempts += 1;
+          const recovery = await recoverActionFromProse(
+            config,
+            messages,
+            run,
+            phase,
+            iteration,
+            runtime,
+            rawContent,
+            decodeErrors
+          );
+          if (recovery?.action) {
+            callsToExecute = [recovery.action];
+            run.pendingAction = recovery.action;
+          } else if (recovery?.completed && run.successfulToolCalls > 0 && run.failedToolCalls === 0) {
+            recoveryCompleted = true;
+            run.pendingAction = null;
+          }
         }
       }
 
@@ -795,9 +840,14 @@ async function* runToolLoop(
         }
       }
 
-      if (rawContent) {
-        run.finalText = rawContent;
-        yield { type: 'text', content: rawContent, estimatedTime: estimatedTime, phase };
+      // In schema mode rawContent is the JSON envelope, not prose — surface its
+      // human-readable `reason` instead of dumping the raw JSON to the user.
+      const finalText = toolMode === 'schema'
+        ? (decodeRecoveryEnvelope(rawContent)?.reason ?? '')
+        : rawContent;
+      if (finalText) {
+        run.finalText = finalText;
+        yield { type: 'text', content: finalText, estimatedTime: estimatedTime, phase };
       }
 
       return 'ok';

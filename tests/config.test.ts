@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 
-import { envInt, envTemp } from '../src/lib/agent/config.ts';
+import { envInt, envTemp, resolveToolCallMode } from '../src/lib/agent/config.ts';
 
 const KEY = 'AGENT_TEST_CONFIG_VAR';
 
@@ -29,6 +29,33 @@ describe('envInt', () => {
   it('ignores surrounding whitespace', () => {
     process.env[KEY] = '  2048  ';
     assert.equal(envInt(KEY, 8192), 2048);
+  });
+});
+
+describe('resolveToolCallMode', () => {
+  it('defaults to native when the env var is unset or junk', () => {
+    assert.equal(resolveToolCallMode('qwen3:8b', undefined), 'native');
+    assert.equal(resolveToolCallMode('qwen3:8b', 'nonsense'), 'native');
+  });
+
+  it('honours an explicit native/schema override regardless of model size', () => {
+    assert.equal(resolveToolCallMode('qwen3:8b', 'schema'), 'schema');
+    assert.equal(resolveToolCallMode('qwen3:32b', 'schema'), 'schema');
+    assert.equal(resolveToolCallMode('qwen3:8b', 'native'), 'native');
+  });
+
+  it('auto picks schema for small models and native for large ones', () => {
+    for (const small of ['qwen3:8b', 'llama3.1:7b', 'gemma2:9b', 'phi3:3.8b-mini']) {
+      assert.equal(resolveToolCallMode(small, 'auto'), 'schema', `expected schema for ${small}`);
+    }
+    for (const large of ['qwen2.5-coder:14b', 'qwen3:32b', 'llama3.3:70b']) {
+      assert.equal(resolveToolCallMode(large, 'auto'), 'native', `expected native for ${large}`);
+    }
+  });
+
+  it('is case-insensitive and trims the override', () => {
+    assert.equal(resolveToolCallMode('qwen3:8b', '  SCHEMA '), 'schema');
+    assert.equal(resolveToolCallMode('qwen3:8b', 'Auto'), 'schema');
   });
 });
 

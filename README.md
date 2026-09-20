@@ -92,6 +92,7 @@ that without code changes:
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `AGENT_MODEL_NUM_CTX` | `8192` | Ollama `num_ctx`. The fixed per-call overhead (system prompt + tool schemas) is ~2.7k tokens. If the context window overflows mid-run, Ollama drops its cached prefix and re-processes that overhead on every later call — the biggest slowdown in multi-step runs. Raise it to retain more history (costs more KV-cache VRAM); lower it on tight hardware. |
+| `AGENT_TOOL_CALL_MODE` | `native` | How the model is asked for tool calls. `native` = Ollama function-calling. `schema` = the reply is grammar-constrained to a JSON action envelope (one tool call per turn) so small models can't emit a malformed/absent call — far more reliable on 7B–9B models, and it skips the prose-recovery round-trip. `auto` = `schema` for small models, `native` for large. Try `auto` or `schema` if your local model keeps failing to act. |
 | `AGENT_MODEL_TEMPERATURE` | `0.1` | Sampling temperature for execution turns (`0`–`2`). |
 | `AGENT_PLANNING_TEMPERATURE` | `0.2` | Sampling temperature for the planning turn. |
 | `AGENT_OLLAMA_KEEP_ALIVE` | `15m` | How long Ollama keeps the model resident between turns. Staying warm skips the multi-second reload each turn; set `off` to opt out. |

@@ -154,6 +154,13 @@ export interface AgentConfig {
    * the last message is a synthetic "proceed" instruction rather than the goal.
    */
   goal?: string;
+  /**
+   * How the execution loop asks the model for tool calls: 'native' (Ollama
+   * function-calling), 'schema' (grammar-constrained JSON envelope), or 'auto'
+   * (schema for small models). Omitted -> resolved from AGENT_TOOL_CALL_MODE,
+   * default 'native'. See resolveToolCallMode.
+   */
+  toolCallMode?: 'native' | 'schema' | 'auto';
 }
 
 /* ------------------------------------------------------------------ *

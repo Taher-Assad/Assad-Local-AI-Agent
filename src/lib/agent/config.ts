@@ -43,6 +43,42 @@ export const MODEL_TEMPERATURE = envTemp('AGENT_MODEL_TEMPERATURE', 0.1);
 export const PLANNING_TEMPERATURE = envTemp('AGENT_PLANNING_TEMPERATURE', 0.2);
 export const MAX_ACTION_RECOVERY_ATTEMPTS = 2;
 
+/**
+ * How the execution loop asks the model for its next tool call.
+ * - `native`: Ollama function-calling (`tools:`). Rich, but small models emit
+ *   malformed/absent tool calls, which is what the prose-recovery net catches.
+ * - `schema`: the model is constrained to a JSON envelope (`format:`) that must
+ *   hold exactly one tool call or a completion — grammar-constrained decoding.
+ *   Small models can't produce a structurally invalid answer, so the recovery
+ *   round-trips largely disappear. One action per turn (no parallel calls).
+ * - `auto`: pick per model — `schema` for small models, `native` for large.
+ */
+export type ToolCallMode = 'native' | 'schema' | 'auto';
+
+/** Models at/below this size are treated as "small" by `auto`. */
+function isSmallModel(model: string): boolean {
+  return /\b(0\.5b|1\.5b|1b|2b|3b|4b|7b|8b|9b)\b/i.test(model);
+}
+
+/**
+ * Resolves the tool-call strategy for a model. `AGENT_TOOL_CALL_MODE`
+ * (native | schema | auto) overrides; otherwise the default is `native` so
+ * behaviour is unchanged unless a user opts in. Set it to `auto` to let small
+ * models use the more reliable schema-constrained path.
+ */
+export function resolveToolCallMode(
+  model: string,
+  raw = process.env.AGENT_TOOL_CALL_MODE
+): Exclude<ToolCallMode, 'auto'> {
+  const normalized = raw?.trim().toLowerCase();
+  const requested: ToolCallMode =
+    normalized === 'schema' || normalized === 'auto' || normalized === 'native'
+      ? normalized
+      : 'native';
+  if (requested === 'auto') return isSmallModel(model) ? 'schema' : 'native';
+  return requested;
+}
+
 /** JSON schema used only for the constrained action-recovery turn. */
 export const ACTION_RECOVERY_SCHEMA = {
   type: 'object',

@@ -33,7 +33,8 @@ function config(maxIterations = 5): AgentConfig {
 
 async function runWith(
   replies: ChatResponse[],
-  goal: string
+  goal: string,
+  configOverride: Partial<AgentConfig> = {}
 ): Promise<{
   updates: AgentUpdate[];
   requests: NonStreamingChatRequest[];
@@ -77,7 +78,9 @@ async function runWith(
   };
   const history: Message[] = [{ role: 'user', content: goal }];
   const updates: AgentUpdate[] = [];
-  for await (const update of runAgent(config(), history, runtime)) updates.push(update);
+  for await (const update of runAgent({ ...config(), ...configOverride }, history, runtime)) {
+    updates.push(update);
+  }
   return { updates, requests, metadata, executions };
 }
 
@@ -251,6 +254,37 @@ describe('agent tool execution', () => {
     assert.deepEqual(result.executions, [
       { name: 'write_file', args: { filePath: 'probe.txt', content: 'OK' } }
     ]);
+  });
+
+  it('executes via the schema-constrained envelope in schema mode', async () => {
+    // Schema mode: every model turn is the constrained {action, completed,
+    // reason} envelope decoded directly — one tool call per turn, then a
+    // completion. The user-facing text is the envelope's `reason`, never the
+    // raw JSON.
+    const result = await runWith(
+      [
+        response(JSON.stringify({
+          action: { name: 'run_command', arguments: { command: 'New-Item probe.txt' } },
+          completed: false,
+          reason: 'Creating the file.'
+        })),
+        response(JSON.stringify({
+          action: null,
+          completed: true,
+          reason: 'Created probe.txt.'
+        }))
+      ],
+      'Create probe.txt',
+      { toolCallMode: 'schema' }
+    );
+
+    assert.deepEqual(result.executions, [
+      { name: 'run_command', args: { command: 'New-Item probe.txt' } }
+    ]);
+    // Final text is the human-readable reason, not the JSON envelope.
+    const texts = result.updates.filter(u => u.type === 'text').map(u => u.content);
+    assert.ok(texts.includes('Created probe.txt.'));
+    assert.ok(!texts.some(t => t?.includes('"completed"')), 'raw envelope JSON leaked to text');
   });
 
   it('allows direct answers for informational questions', async () => {
