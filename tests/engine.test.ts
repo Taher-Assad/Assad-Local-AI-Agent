@@ -170,6 +170,26 @@ describe('agent tool execution', () => {
     assert.match(String(result.requests[1].messages?.at(-1)?.content), /explicitly requested shell/);
   });
 
+  it('does not force run_command when "command" only appears as a noun (e.g. command-line parser)', async () => {
+    // Regression: requestsShellExecution matched the bare word "command", so a
+    // build request that merely mentions "command-line" wrongly discarded a
+    // valid write_file and failed the run demanding a shell call.
+    const writeFile: ToolCall = {
+      function: { name: 'write_file', arguments: { filePath: 'parser.js', content: '// cli' } }
+    };
+    const result = await runWith(
+      [response('', [writeFile]), response('Done.')],
+      'Create a command-line argument parser in parser.js'
+    );
+
+    assert.deepEqual(result.executions, [
+      { name: 'write_file', args: { filePath: 'parser.js', content: '// cli' } }
+    ]);
+    assert.ok(!result.updates.some(update =>
+      update.type === 'error' && update.content?.includes('run_command')
+    ));
+  });
+
   it('retries prose-only action responses instead of claiming success', async () => {
     const result = await runWith(
       [
