@@ -10,6 +10,7 @@ export function useFileExplorer(workspacePath: string) {
     setLoading(true);
     try {
       const res = await fetch(`/api/files?workspace=${encodeURIComponent(workspacePath)}&path=${encodeURIComponent(relativePath)}`);
+      if (!res.ok) throw new Error(`Failed to load files (${res.status})`);
       const data = await res.json();
       if (data.items) {
         if (relativePath === '.') {
@@ -26,9 +27,14 @@ export function useFileExplorer(workspacePath: string) {
     }
   }, [workspacePath]);
 
-  const openFile = async (filePath: string) => {
+  const refreshFiles = useCallback(async () => {
+    await fetchFiles('.');
+  }, [fetchFiles]);
+
+  const openFile = useCallback(async (filePath: string) => {
     try {
       const res = await fetch(`/api/files?workspace=${encodeURIComponent(workspacePath)}&path=${encodeURIComponent(filePath)}&mode=read`);
+      if (!res.ok) throw new Error(`Failed to read file (${res.status})`);
       const data = await res.json();
       if (data.content !== undefined) {
         setCurrentFileContent({ path: filePath, content: data.content });
@@ -36,18 +42,22 @@ export function useFileExplorer(workspacePath: string) {
     } catch (err) {
       console.error('Failed to read file:', err);
     }
-  };
+  }, [workspacePath]);
 
   useEffect(() => {
-    fetchFiles('.');
-    setCurrentFileContent(null);
-  }, [workspacePath, fetchFiles]);
+    const timer = window.setTimeout(() => {
+      void refreshFiles();
+      setCurrentFileContent(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [workspacePath, refreshFiles]);
 
   return {
     files,
     loading,
     currentFileContent,
     fetchFiles,
+    refreshFiles,
     openFile,
     setCurrentFileContent
   };

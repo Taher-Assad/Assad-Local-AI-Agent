@@ -34,19 +34,19 @@ export function ArtifactPanel({
 
   return (
     <aside
-      className="w-[420px] border-l border-zinc-900/80 bg-zinc-950/40 flex flex-col shrink-0"
+      className="w-[420px] border-l border-white/[0.06] bg-black/30 backdrop-blur-sm flex flex-col shrink-0"
       aria-label="Artifacts"
     >
-      <div className="flex items-center justify-between p-3.5 border-b border-zinc-900/60 bg-zinc-950/20">
+      <div className="flex items-center justify-between p-3.5 border-b border-white/[0.06] bg-black/20">
         <div className="flex items-center gap-2">
-          <Layers size={14} className="text-purple-400" aria-hidden="true" />
-          <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-200">Artifacts</h2>
-          <span className="text-[10px] font-mono text-zinc-500">{artifacts.length}</span>
+          <Layers size={14} className="text-indigo-400" aria-hidden="true" />
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-200">Artifacts</h2>
+          <span className="text-[10px] font-mono text-indigo-300/70 bg-indigo-500/10 border border-indigo-500/25 rounded-full px-1.5">{artifacts.length}</span>
         </div>
         {onClose && (
           <button
             onClick={onClose}
-            className="p-1 rounded hover:bg-zinc-800/80 text-zinc-400 hover:text-zinc-200 transition"
+            className="p-1 rounded-lg hover:bg-white/[0.06] text-zinc-400 hover:text-zinc-200 transition"
             aria-label="Close artifacts panel"
           >
             <X size={14} aria-hidden="true" />

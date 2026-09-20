@@ -44,16 +44,16 @@ export function ChatMessage({ message }: ChatMessageProps) {
 
   return (
     <div className={`flex w-full my-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`flex max-w-[85%] items-start space-x-3 rounded-xl p-4 shadow-lg transition-all duration-200 border
-        ${isUser 
-          ? 'bg-purple-950/40 text-purple-100 border-purple-800/40 rounded-br-none' 
-          : 'bg-zinc-900/60 text-zinc-100 border-zinc-800/60 rounded-bl-none'
+      <div className={`flex max-w-[85%] items-start space-x-3 rounded-2xl p-4 shadow-lg transition-all duration-200 border
+        ${isUser
+          ? 'bg-indigo-500/12 text-indigo-50 border-indigo-500/30 rounded-br-md'
+          : 'ag-glass text-zinc-100 rounded-bl-md'
         }`}
       >
         <div className="flex flex-col space-y-2 w-full">
           {/* Sender Header */}
-          <span className={`text-[11px] font-semibold uppercase tracking-wider ${isUser ? 'text-purple-400 text-right' : 'text-indigo-400'}`}>
-            {isUser ? 'Developer' : 'Assad Agent'}
+          <span className={`text-[11px] font-semibold uppercase tracking-wider ${isUser ? 'text-indigo-300 text-right' : 'ag-gradient-text'}`}>
+            {isUser ? 'Developer' : 'Antigravity'}
           </span>
 
           {/* Attached Images (shown for user messages) */}
@@ -65,7 +65,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
                   key={idx}
                   src={imgSrc.startsWith('data:') ? imgSrc : `data:image/png;base64,${imgSrc}`}
                   alt={`Attached image ${idx + 1}`}
-                  className="max-w-[240px] max-h-[180px] object-contain rounded-lg border border-purple-800/40 cursor-pointer hover:opacity-90 transition"
+                  className="max-w-[240px] max-h-[180px] object-contain rounded-lg border border-indigo-500/30 cursor-pointer hover:opacity-90 transition"
                   onClick={() => window.open(imgSrc.startsWith('data:') ? imgSrc : `data:image/png;base64,${imgSrc}`, '_blank')}
                 />
               ))}
@@ -75,10 +75,10 @@ export function ChatMessage({ message }: ChatMessageProps) {
           {/* Main Message Content */}
           {message.content && (
             <div 
-              className="prose prose-invert max-w-none text-sm leading-relaxed 
-                prose-pre:bg-black/60 prose-pre:border prose-pre:border-zinc-800/60 prose-pre:rounded-lg 
-                prose-code:text-purple-300 prose-code:bg-purple-950/30 prose-code:px-1 prose-code:py-0.5 prose-code:rounded
-                prose-a:text-purple-400 hover:prose-a:underline"
+              className="prose prose-invert max-w-none text-sm leading-relaxed
+                prose-pre:bg-black/60 prose-pre:border prose-pre:border-white/10 prose-pre:rounded-lg
+                prose-code:text-sky-300 prose-code:bg-sky-500/10 prose-code:px-1 prose-code:py-0.5 prose-code:rounded
+                prose-a:text-indigo-300 hover:prose-a:underline"
               dangerouslySetInnerHTML={getHtmlContent(message.content)} 
             />
           )}
@@ -101,7 +101,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
                         (e.target as HTMLElement).parentElement!.style.display = 'none';
                       }}
                     />
-                    <span className="text-[11px] font-mono text-purple-300 mt-1.5 truncate">
+                    <span className="text-[11px] font-mono text-sky-300 mt-1.5 truncate">
                       {imgName}
                     </span>
                   </div>

@@ -8,61 +8,138 @@
     --card-foreground: 0 0% 98%;
     --popover: 240 10% 3.9%;
     --popover-foreground: 0 0% 98%;
-    --primary: 263.4 70% 50.4%;
+    --primary: 231 70% 62%;
     --primary-foreground: 210 20% 98%;
     --secondary: 240 3.7% 15.9%;
     --secondary-foreground: 0 0% 98%;
     --muted: 240 3.7% 15%;
     --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
+    --accent: 231 70% 62%;
     --accent-foreground: 0 0% 98%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 0 0% 98%;
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
-    --radius: 0.5rem;
+    --ring: 231 70% 62%;
+    --radius: 0.75rem;
+
+    /* Antigravity signature accents */
+    --ag-sky: #38bdf8;
+    --ag-indigo: #6366f1;
+    --ag-violet: #a855f7;
+    --ag-fuchsia: #d946ef;
   }
 }
 
 body {
-  background-color: #0b0b0f;
+  background-color: #060609;
   color: #f3f4f6;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Custom Scrollbar for IDE Aesthetic */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* ---- Antigravity design system --------------------------------------- */
+
+/* Deep-space canvas with a subtle cosmic glow that anchors the gravity theme. */
+.ag-app-bg {
+  background-color: #060609;
+  background-image:
+    radial-gradient(1200px 620px at 12% -12%, rgba(99, 102, 241, 0.12), transparent 60%),
+    radial-gradient(1000px 520px at 100% -4%, rgba(56, 189, 248, 0.07), transparent 55%),
+    radial-gradient(900px 820px at 52% 118%, rgba(217, 70, 239, 0.06), transparent 62%);
 }
 
-::-webkit-scrollbar-track {
-  background: #0d0d12;
+/* The signature sky -> indigo -> fuchsia sweep for brand marks and primaries. */
+.ag-brand-gradient {
+  background-image: linear-gradient(135deg, #38bdf8 0%, #6366f1 48%, #d946ef 100%);
+}
+.ag-brand-gradient-hover:hover {
+  background-image: linear-gradient(135deg, #53c7fb 0%, #7c7ff5 48%, #e455f2 100%);
 }
 
-::-webkit-scrollbar-thumb {
-  background: #272730;
+/* Gradient-clipped text for the wordmark and headings. */
+.ag-gradient-text {
+  background-image: linear-gradient(120deg, #7dd3fc 0%, #a5b4fc 42%, #f0abfc 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Frosted glass surface used across panels, cards and inputs. */
+.ag-glass {
+  background-color: rgba(255, 255, 255, 0.022);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(8px);
+}
+.ag-glass-hover:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Elevated indigo glow for active / focused elements. */
+.ag-glow {
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.28), 0 10px 34px -10px rgba(99, 102, 241, 0.5);
+}
+.ag-glow-soft {
+  box-shadow: 0 10px 32px -14px rgba(99, 102, 241, 0.55);
+}
+.ag-ring-focus:focus-within {
+  border-color: rgba(129, 140, 248, 0.7);
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.35), 0 0 26px -8px rgba(99, 102, 241, 0.55);
+}
+
+/* Thin gradient rail used to mark the active agent / selection. */
+.ag-active-rail {
+  position: relative;
+}
+.ag-active-rail::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2.5px;
   border-radius: 3px;
+  background-image: linear-gradient(180deg, #38bdf8, #6366f1, #d946ef);
 }
 
+/* Custom scrollbar tuned to the space palette. */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.28);
+  border-radius: 4px;
+}
 ::-webkit-scrollbar-thumb:hover {
-  background: #3e3e4a;
+  background: rgba(129, 140, 248, 0.5);
 }
 
 /* Animations */
 @keyframes pulseGlow {
   0%, 100% {
-    opacity: 0.4;
-    filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.4));
+    opacity: 0.45;
+    filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.45));
   }
   50% {
-    opacity: 0.8;
-    filter: drop-shadow(0 0 20px rgba(139, 92, 246, 0.8));
+    opacity: 1;
+    filter: drop-shadow(0 0 18px rgba(129, 140, 248, 0.85));
   }
 }
 
 .glow-active {
-  animation: pulseGlow 2s infinite ease-in-out;
+  animation: pulseGlow 2.4s infinite ease-in-out;
+}
+
+@keyframes agFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+.ag-float {
+  animation: agFloat 4s infinite ease-in-out;
 }

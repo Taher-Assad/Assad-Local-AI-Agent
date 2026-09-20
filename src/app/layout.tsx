@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Assad Local AI Agent",
-  description: "Autonomous Multimodal Local AI Software Engineer",
+  title: "Antigravity — Local Agent Workspace",
+  description: "An agent-first workspace powered by your local Ollama models",
 };
 
 export default function RootLayout({

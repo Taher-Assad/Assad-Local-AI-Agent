@@ -8,7 +8,8 @@ function sanitizePath(workspacePath: string, targetPath: string): string {
     ? path.resolve(targetPath) 
     : path.resolve(workspacePath, targetPath);
 
-  if (!absoluteTarget.startsWith(absoluteWorkspace)) {
+  const relative = path.relative(absoluteWorkspace, absoluteTarget);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error('Access Denied');
   }
   return absoluteTarget;
@@ -88,7 +89,8 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ items: results });
 
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

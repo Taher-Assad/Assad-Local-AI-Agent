@@ -14,12 +14,13 @@ export async function GET() {
         modified: m.modified_at
       }))
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     // Ollama is probably not running or connection refused
     return NextResponse.json({
       connected: false,
       models: [],
-      error: error.message
+      error: message
     });
   }
 }

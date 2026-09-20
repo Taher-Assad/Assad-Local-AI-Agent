@@ -28,7 +28,7 @@ async function runTest() {
       } else if (update.type === 'tool_call') {
         console.log(`[Tool Call] 🔧 Invoking: ${update.name} with args:`, update.args);
       } else if (update.type === 'tool_result') {
-        console.log(`[Tool Result] ✅ Received output length: ${update.result?.length || 0} characters`);
+        console.log(`[Tool Result] ${update.result?.ok ? '✅' : '❌'} ${update.result?.output || ''}`);
       } else if (update.type === 'text') {
         console.log(`\n[Agent Response] 🤖:\n${update.content}`);
       } else if (update.type === 'error') {

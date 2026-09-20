@@ -12,7 +12,7 @@ interface TaskGroupListProps {
 const STATUS_ICON: Record<TaskStatus, React.ReactElement> = {
   pending: <Circle size={12} className="text-zinc-600 shrink-0" aria-hidden="true" />,
   active: (
-    <CircleDot size={12} className="text-purple-400 animate-pulse shrink-0" aria-hidden="true" />
+    <CircleDot size={12} className="text-indigo-400 animate-pulse shrink-0" aria-hidden="true" />
   ),
   done: <Check size={12} className="text-green-500 shrink-0" aria-hidden="true" />,
   failed: <XCircle size={12} className="text-red-400 shrink-0" aria-hidden="true" />,
@@ -21,17 +21,17 @@ const STATUS_ICON: Record<TaskStatus, React.ReactElement> = {
 
 const STATUS_TEXT: Record<TaskStatus, string> = {
   pending: 'text-zinc-400',
-  active: 'text-purple-200 font-medium',
+  active: 'text-indigo-200 font-medium',
   done: 'text-zinc-300 line-through decoration-zinc-700',
   failed: 'text-red-300',
   skipped: 'text-zinc-500 line-through decoration-zinc-800'
 };
 
 const GROUP_CHIP: Record<TaskGroup['status'], string> = {
-  pending: 'bg-zinc-900 text-zinc-500 border-zinc-800',
-  active: 'bg-purple-950/40 text-purple-300 border-purple-800/50',
-  done: 'bg-green-950/30 text-green-400 border-green-900/40',
-  failed: 'bg-red-950/30 text-red-400 border-red-900/40'
+  pending: 'bg-white/[0.04] text-zinc-500 border-white/10',
+  active: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/40',
+  done: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  failed: 'bg-red-500/15 text-red-400 border-red-500/30'
 };
 
 function TaskRow({ task }: { task: AgentTask }) {
@@ -64,7 +64,7 @@ export function TaskGroupList({ groups, progress, compact = false }: TaskGroupLi
             <span>{progress.percent}%</span>
           </div>
           <div
-            className="h-1 w-full rounded-full bg-zinc-900 overflow-hidden"
+            className="h-1 w-full rounded-full bg-white/[0.06] overflow-hidden"
             role="progressbar"
             aria-valuenow={progress.percent}
             aria-valuemin={0}
@@ -72,7 +72,7 @@ export function TaskGroupList({ groups, progress, compact = false }: TaskGroupLi
             aria-label="Plan progress"
           >
             <div
-              className="h-full bg-purple-600 transition-all duration-500"
+              className="ag-brand-gradient h-full transition-all duration-500"
               style={{ width: `${progress.percent}%` }}
             />
           </div>
