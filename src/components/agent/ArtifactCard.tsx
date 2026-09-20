@@ -26,19 +26,19 @@ interface ArtifactCardProps {
 }
 
 const KIND_ICON: Record<ArtifactKind, React.ReactElement> = {
-  'implementation-plan': <ClipboardList size={14} className="text-purple-400" aria-hidden="true" />,
-  'task-list': <ListChecks size={14} className="text-purple-400" aria-hidden="true" />,
-  walkthrough: <FileText size={14} className="text-indigo-400" aria-hidden="true" />,
+  'implementation-plan': <ClipboardList size={14} className="text-indigo-400" aria-hidden="true" />,
+  'task-list': <ListChecks size={14} className="text-indigo-400" aria-hidden="true" />,
+  walkthrough: <FileText size={14} className="text-sky-400" aria-hidden="true" />,
   screenshot: <Camera size={14} className="text-cyan-400" aria-hidden="true" />,
-  'browser-recording': <Video size={14} className="text-cyan-400" aria-hidden="true" />
+  'browser-recording': <Video size={14} className="text-fuchsia-400" aria-hidden="true" />
 };
 
 const STATUS_CHIP: Record<ArtifactStatus, string> = {
-  draft: 'bg-zinc-900 text-zinc-400 border-zinc-800',
-  'awaiting-review': 'bg-amber-950/40 text-amber-300 border-amber-800/50',
-  approved: 'bg-green-950/30 text-green-400 border-green-900/40',
-  'changes-requested': 'bg-orange-950/40 text-orange-300 border-orange-900/50',
-  final: 'bg-indigo-950/40 text-indigo-300 border-indigo-800/50'
+  draft: 'bg-white/[0.04] text-zinc-400 border-white/10',
+  'awaiting-review': 'bg-amber-500/15 text-amber-300 border-amber-500/40',
+  approved: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  'changes-requested': 'bg-orange-500/15 text-orange-300 border-orange-500/40',
+  final: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/40'
 };
 
 const STATUS_LABEL: Record<ArtifactStatus, string> = {
@@ -91,13 +91,13 @@ export function ArtifactCard({
 
   return (
     <section
-      className={`rounded-lg border overflow-hidden bg-zinc-950/50 ${
-        awaitingReview ? 'border-amber-800/50' : 'border-zinc-800/80'
+      className={`rounded-xl border overflow-hidden ${
+        awaitingReview ? 'border-amber-500/40 bg-amber-500/[0.03] ag-glow' : 'ag-glass'
       }`}
     >
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 bg-zinc-900/40 hover:bg-zinc-900/70 transition text-left"
+        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-white/[0.04] transition text-left"
         aria-expanded={isOpen}
         aria-controls={bodyId}
       >
@@ -135,8 +135,8 @@ export function ArtifactCard({
             <div
               className="prose prose-invert max-w-none text-xs leading-relaxed
                 prose-headings:text-zinc-200 prose-headings:text-xs
-                prose-code:text-purple-300 prose-code:bg-purple-950/30 prose-code:px-1 prose-code:rounded
-                prose-pre:bg-black/60 prose-pre:border prose-pre:border-zinc-800/60"
+                prose-code:text-sky-300 prose-code:bg-sky-500/10 prose-code:px-1 prose-code:rounded
+                prose-pre:bg-black/60 prose-pre:border prose-pre:border-white/10"
               dangerouslySetInnerHTML={renderMarkdown(artifact.body)}
             />
           )}
@@ -204,7 +204,7 @@ export function ArtifactCard({
               placeholder={
                 awaitingReview ? 'Describe the changes you want...' : 'Leave a comment...'
               }
-              className="w-full resize-none rounded border border-zinc-800 bg-zinc-950/80 px-2 py-1.5 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-purple-700 focus:outline-none"
+              className="ag-glass w-full resize-none rounded-lg px-2 py-1.5 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-indigo-500/70 focus:outline-none"
             />
             <div className="flex flex-wrap items-center gap-2">
               {isPlan && awaitingReview && (

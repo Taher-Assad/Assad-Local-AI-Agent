@@ -2,14 +2,21 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   AgentRunStatus,
   AgentSettings,
+  AgentUpdate,
   Artifact,
   ChatSession,
   Message,
   PermissionEvaluation,
   PlanProgress,
-  TaskGroup
+  TaskGroup,
+  ToolCallState
 } from '@/types';
-import { AgentUpdate } from '@/lib/agent/engine';
+import {
+  CHAT_STREAM_CONTENT_TYPE,
+  CHAT_STREAM_PROTOCOL,
+  CHAT_STREAM_PROTOCOL_HEADER
+} from '@/lib/agent/config';
+import { SseParser } from '@/lib/sse';
 import {
   addComment,
   approveArtifact,
@@ -42,7 +49,9 @@ export function useChat(selectedModel: string, workspacePath: string) {
   const [thinkingText, setThinkingText] = useState<string | null>(null);
   const [estimatedTime, setEstimatedTime] = useState<string | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
-  const [toolCalls, setToolCalls] = useState<{name: string, args: any, status: 'running' | 'done', result?: string, duration?: number}[]>([]);
+  const [toolCalls, setToolCalls] = useState<ToolCallState[]>([]);
+  const [mutationRevision, setMutationRevision] = useState(0);
+  const [affectedFiles, setAffectedFiles] = useState<string[]>([]);
   // --- Antigravity state ---
   const [settings, setSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -109,8 +118,9 @@ export function useChat(selectedModel: string, workspacePath: string) {
       messages: s.messages.slice(-40).map(m => {
         // Do not store heavy base64 strings in localStorage to avoid QuotaExceeded & truncation
         if (m.images) {
-          const { images, ...rest } = m;
-          return rest as Message;
+          const rest: Message = { ...m };
+          delete rest.images;
+          return rest;
         }
         return m;
       })
@@ -220,6 +230,7 @@ export function useChat(selectedModel: string, workspacePath: string) {
     setEstimatedTime(null);
     setElapsedSeconds(0);
     setToolCalls([]);
+    setAffectedFiles([]);
     setPendingCommand(null);
     setIsLoading(true);
     setRunStatus(
@@ -294,175 +305,217 @@ export function useChat(selectedModel: string, workspacePath: string) {
         signal: abortControllerRef.current.signal
       });
 
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        const detail = contentType.includes('application/json')
+          ? await response.json().catch(() => null)
+          : await response.text().catch(() => '');
+        const message =
+          detail && typeof detail === 'object' && typeof detail.error === 'string'
+            ? detail.error
+            : typeof detail === 'string' && detail.trim()
+              ? detail.trim()
+              : `Chat request failed (${response.status})`;
+        throw new Error(message);
+      }
+
+      const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+      if (!contentType.startsWith(CHAT_STREAM_CONTENT_TYPE)) {
+        throw new Error(`Unexpected chat response content type: ${contentType || 'missing'}`);
+      }
+
+      const protocol = response.headers.get(CHAT_STREAM_PROTOCOL_HEADER);
+      if (protocol !== CHAT_STREAM_PROTOCOL) {
+        throw new Error(`Unsupported chat stream protocol: ${protocol || 'missing'}`);
+      }
+
       if (!response.body) {
         throw new Error('No readable body in server response');
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = '';
+      const parser = new SseParser();
       let assistantResponseContent = '';
+      let sawRunStarted = false;
+      let sawTerminalEvent = false;
       // Artifacts accumulate across turns in a session, so start from what the
       // session already has and add whatever this stream produces.
       let streamArtifacts: Artifact[] = [...artifacts];
+
+      const handleEvent = (eventName: string, payload: string) => {
+        let data: AgentUpdate;
+        try {
+          data = JSON.parse(payload) as AgentUpdate;
+        } catch (error) {
+          throw new Error(`Invalid JSON in ${eventName || 'message'} event: ${toErrorMessage(error)}`);
+        }
+
+        if (data.type !== eventName) {
+          throw new Error(`Chat stream event mismatch: event=${eventName}, data.type=${data.type}`);
+        }
+        if (!sawRunStarted && data.type !== 'run_started') {
+          throw new Error('Chat stream did not begin with run_started');
+        }
+        if (data.type === 'run_started') {
+          if (sawRunStarted) throw new Error('Chat stream sent run_started more than once');
+          if (data.protocol !== CHAT_STREAM_PROTOCOL) {
+            throw new Error(`Unsupported run protocol: ${data.protocol || 'missing'}`);
+          }
+          sawRunStarted = true;
+        }
+
+        if (data.estimatedTime) setEstimatedTime(data.estimatedTime);
+        if (data.runStatus) setRunStatus(data.runStatus);
+        if (data.mutationRevision !== undefined) setMutationRevision(data.mutationRevision);
+        if (data.affectedFiles?.length) {
+          setAffectedFiles(previous => Array.from(new Set([...previous, ...data.affectedFiles!])))
+        }
+
+        if (data.type === 'thinking') {
+          setThinkingText(data.content || 'Thinking...');
+        } else if (data.type === 'phase') {
+          setThinkingText(data.content || null);
+        } else if (data.type === 'artifact' && data.artifact) {
+          const incoming = data.artifact;
+          streamArtifacts = upsertArtifact(streamArtifacts, incoming);
+          setArtifacts(streamArtifacts);
+          currentSessions = currentSessions.map(session =>
+            session.id === currentSessionId ? { ...session, artifacts: streamArtifacts } : session
+          );
+          if (incoming.taskGroups) {
+            setTaskGroups(incoming.taskGroups);
+            setProgress(computeProgress(incoming.taskGroups));
+          }
+        } else if (data.type === 'task_update') {
+          if (data.taskGroups) setTaskGroups(data.taskGroups);
+          if (data.progress) setProgress(data.progress);
+        } else if (data.type === 'awaiting_review') {
+          if (data.permission) setPendingCommand(data.permission);
+          setRunStatus('awaiting-review');
+        } else if (data.type === 'permission_denied') {
+          setToolCalls(previous => [
+            ...previous,
+            {
+              callId: data.callId || crypto.randomUUID(),
+              name: data.name || 'run_command',
+              args: data.args,
+              status: 'refused',
+              result: data.content || 'Blocked by policy'
+            }
+          ]);
+        } else if (data.type === 'verification' && data.verification) {
+          const check = data.verification;
+          setToolCalls(previous => [
+            ...previous,
+            {
+              callId: data.callId || crypto.randomUUID(),
+              name: `verify: ${check.label}`,
+              args: { command: check.command },
+              status: check.passed ? 'succeeded' : 'failed',
+              result: `${check.passed ? 'PASS' : 'FAIL'}\n${check.output || ''}`
+            }
+          ]);
+        } else if (data.type === 'tool_call') {
+          if (!data.callId) throw new Error('tool_call event is missing callId');
+          setToolCalls(previous => [
+            ...previous,
+            { callId: data.callId!, name: data.name || '', args: data.args, status: 'running' }
+          ]);
+        } else if (data.type === 'tool_result') {
+          if (!data.callId) throw new Error('tool_result event is missing callId');
+          setToolCalls(previous => {
+            const index = previous.findIndex(tool => tool.callId === data.callId);
+            if (index < 0) return previous;
+            const next = [...previous];
+            next[index] = {
+              ...next[index],
+              status: data.resultStatus || 'succeeded',
+              result: data.result?.output ?? '',
+              duration: data.duration
+            };
+            return next;
+          });
+        } else if (data.type === 'text') {
+          assistantResponseContent += data.content || '';
+          setMessages(previous => {
+            const lastMessage = previous[previous.length - 1];
+            const finalMessages: Message[] = lastMessage?.role === 'assistant'
+              ? [...previous.slice(0, -1), { role: 'assistant', content: assistantResponseContent }]
+              : [...previous, { role: 'assistant', content: assistantResponseContent }];
+            currentSessions = currentSessions.map(session =>
+              session.id === currentSessionId ? { ...session, messages: finalMessages } : session
+            );
+            return finalMessages;
+          });
+        } else if (data.type === 'error') {
+          sawTerminalEvent = true;
+          throw new Error(data.content || data.code || 'Agent stream failed');
+        } else if (data.type === 'done') {
+          sawTerminalEvent = true;
+          const finalStatus: AgentRunStatus =
+            data.runStatus === 'awaiting-review' ? 'awaiting-review' : 'completed';
+          setRunStatus(finalStatus);
+          setMessages(previous => {
+            const synchronizedSessions = currentSessions.map(session =>
+              session.id === currentSessionId
+                ? {
+                    ...session,
+                    messages: previous,
+                    updatedAt: Date.now(),
+                    model: selectedModel,
+                    runStatus: finalStatus,
+                    settings: settingsRef.current
+                  }
+                : session
+            );
+            saveSessions(synchronizedSessions);
+            return previous;
+          });
+        }
+      };
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        let currentEvent = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.substring(7).trim();
-          } else if (line.startsWith('data: ') && currentEvent) {
-            try {
-              const data: AgentUpdate = JSON.parse(line.substring(6));
-              
-              if (data.estimatedTime) {
-                setEstimatedTime(data.estimatedTime);
-              }
-              if (data.runStatus) {
-                setRunStatus(data.runStatus);
-              }
-
-              if (data.type === 'thinking') {
-                setThinkingText(data.content || 'Thinking...');
-              } else if (data.type === 'phase') {
-                setThinkingText(data.content || null);
-              } else if (data.type === 'artifact' && data.artifact) {
-                const incoming = data.artifact;
-                // Track artifacts in a plain variable too, so the session sync
-                // below stays outside the state updater (no side effects there).
-                streamArtifacts = upsertArtifact(streamArtifacts, incoming);
-                setArtifacts(streamArtifacts);
-                currentSessions = currentSessions.map(s =>
-                  s.id === currentSessionId ? { ...s, artifacts: streamArtifacts } : s
-                );
-                if (incoming.taskGroups) {
-                  setTaskGroups(incoming.taskGroups);
-                  setProgress(computeProgress(incoming.taskGroups));
-                }
-              } else if (data.type === 'task_update') {
-                if (data.taskGroups) setTaskGroups(data.taskGroups);
-                if (data.progress) setProgress(data.progress);
-              } else if (data.type === 'awaiting_review') {
-                // A plan awaiting review arrives as an `artifact` event too; only
-                // a held shell command needs its own approval prompt.
-                if (data.permission) setPendingCommand(data.permission);
-                setRunStatus('awaiting-review');
-              } else if (data.type === 'permission_denied') {
-                setToolCalls(prev => [
-                  ...prev,
-                  {
-                    name: data.name || 'run_command',
-                    args: data.args,
-                    status: 'done',
-                    result: `Refused: ${data.content || 'blocked by policy'}`
-                  }
-                ]);
-              } else if (data.type === 'verification' && data.verification) {
-                const check = data.verification;
-                setToolCalls(prev => [
-                  ...prev,
-                  {
-                    name: `verify: ${check.label}`,
-                    args: { command: check.command },
-                    status: 'done',
-                    result: `${check.passed ? 'PASS' : 'FAIL'}\n${check.output || ''}`
-                  }
-                ]);
-              } else if (data.type === 'tool_call') {
-                setToolCalls(prev => [
-                  ...prev,
-                  { name: data.name || '', args: data.args, status: 'running' }
-                ]);
-              } else if (data.type === 'tool_result') {
-                setToolCalls(prev =>
-                  prev.map(t =>
-                    t.name === data.name && t.status === 'running'
-                      ? { ...t, status: 'done', result: data.result, duration: data.duration }
-                      : t
-                  )
-                );
-              } else if (data.type === 'text') {
-                assistantResponseContent += data.content || '';
-                
-                setMessages(prev => {
-                  const lastMsg = prev[prev.length - 1];
-                  const finalMsgChain: Message[] = lastMsg && lastMsg.role === 'assistant'
-                    ? [...prev.slice(0, -1), { role: 'assistant' as const, content: assistantResponseContent }]
-                    : [...prev, { role: 'assistant' as const, content: assistantResponseContent }];
-
-                  // Keep session state updated in memory during stream
-                  currentSessions = currentSessions.map(s => 
-                    s.id === currentSessionId 
-                      ? { ...s, messages: finalMsgChain }
-                      : s
-                  );
-
-                  return finalMsgChain;
-                });
-              } else if (data.type === 'error') {
-                if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-                setThinkingText(null);
-                setIsLoading(false);
-                setRunStatus('failed');
-                setMessages(prev => {
-                  const finalMsgChain: Message[] = [...prev, { role: 'assistant' as const, content: `❌ Error: ${data.content}` }];
-                  const syncSessions = currentSessions.map(s => 
-                    s.id === currentSessionId
-                      ? { ...s, messages: finalMsgChain, runStatus: 'failed' as const }
-                      : s
-                  );
-                  saveSessions(syncSessions);
-                  return finalMsgChain;
-                });
-              } else if (data.type === 'done') {
-                if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-                setThinkingText(null);
-                setIsLoading(false);
-                const finalStatus: AgentRunStatus =
-                  data.runStatus === 'awaiting-review' ? 'awaiting-review' : 'completed';
-                setRunStatus(finalStatus);
-                setMessages(prev => {
-                  const syncSessions = currentSessions.map(s => 
-                    s.id === currentSessionId
-                      ? {
-                          ...s,
-                          messages: prev,
-                          updatedAt: Date.now(),
-                          model: selectedModel,
-                          runStatus: finalStatus,
-                          settings: settingsRef.current
-                        }
-                      : s
-                  );
-                  saveSessions(syncSessions);
-                  return prev;
-                });
-              }
-            } catch (err) {
-              console.error('Failed to parse event JSON:', err);
-            }
-            currentEvent = '';
-          }
+        for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+          handleEvent(event.event, event.data);
         }
       }
 
-    } catch (error: any) {
+      const finalDecoded = decoder.decode();
+      const finalEvents = [
+        ...parser.push(finalDecoded),
+        ...parser.finish()
+      ];
+      for (const event of finalEvents) handleEvent(event.event, event.data);
+
+      if (!sawRunStarted) throw new Error('Chat stream ended before run_started');
+      if (!sawTerminalEvent) throw new Error('Chat stream ended before a terminal event');
+
+    } catch (error: unknown) {
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      if (error.name !== 'AbortError') {
-        setMessages(prev => {
-          const finalMsgChain: Message[] = [...prev, { role: 'assistant' as const, content: `❌ Connection error: ${error.message}` }];
-          const syncSessions = currentSessions.map(s => 
-            s.id === currentSessionId ? { ...s, messages: finalMsgChain } : s
+      const aborted = error instanceof DOMException && error.name === 'AbortError';
+      if (!aborted) {
+        setRunStatus('failed');
+        setToolCalls(previous => previous.map(tool =>
+          tool.status === 'running'
+            ? { ...tool, status: 'failed', result: 'The stream ended before this tool returned.' }
+            : tool
+        ));
+        setMessages(previous => {
+          const finalMessages: Message[] = [
+            ...previous,
+            { role: 'assistant', content: `Connection error: ${toErrorMessage(error)}` }
+          ];
+          const synchronizedSessions = currentSessions.map(session =>
+            session.id === currentSessionId
+              ? { ...session, messages: finalMessages, runStatus: 'failed' as const }
+              : session
           );
-          saveSessions(syncSessions);
-          return finalMsgChain;
+          saveSessions(synchronizedSessions);
+          return finalMessages;
         });
       }
     } finally {
@@ -572,6 +625,8 @@ export function useChat(selectedModel: string, workspacePath: string) {
     estimatedTime,
     elapsedSeconds,
     toolCalls,
+    mutationRevision,
+    affectedFiles,
     sendMessage,
     cancelGeneration,
     createSession,
@@ -591,5 +646,9 @@ export function useChat(selectedModel: string, workspacePath: string) {
     approvePendingCommand,
     rejectPendingCommand
   };
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 

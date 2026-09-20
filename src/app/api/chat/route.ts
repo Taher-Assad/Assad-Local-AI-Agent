@@ -1,12 +1,39 @@
 import { NextRequest } from 'next/server';
+import ollama from 'ollama';
 import { runAgent } from '@/lib/agent/engine';
+import {
+  CHAT_STREAM_CONTENT_TYPE,
+  CHAT_STREAM_PROTOCOL,
+  CHAT_STREAM_PROTOCOL_HEADER,
+  DEFAULT_MODEL
+} from '@/lib/agent/config';
 import { DEFAULT_SYSTEM_PROMPT } from '@/lib/agent/system-prompt';
 import { resolveSettings, withApprovedCommands } from '@/lib/agent/permissions';
-import { AgentConfig, Artifact, Message } from '@/types';
+import { AgentConfig, AgentUpdate, Artifact, Message } from '@/types';
 import path from 'path';
 import fs from 'fs';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * The installed-model list rarely changes within a session, but validating it
+ * used to cost an `ollama.list()` round-trip on every single message. Cache it
+ * briefly so repeated turns start without that latency; a cache miss on the
+ * requested model forces one refresh so a freshly-pulled model is still found.
+ */
+const MODEL_LIST_TTL_MS = 30_000;
+let modelListCache: { names: string[]; at: number } | null = null;
+
+async function listInstalledModels(force = false): Promise<string[]> {
+  const now = Date.now();
+  if (!force && modelListCache && now - modelListCache.at < MODEL_LIST_TTL_MS) {
+    return modelListCache.names;
+  }
+  const response = await ollama.list();
+  const names = response.models.map(installed => installed.name);
+  modelListCache = { names, at: now };
+  return names;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -31,7 +58,36 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const selectedModel = model || 'qwen3.5:9b';
+    const requestedModel = typeof model === 'string' && model.trim() ? model.trim() : DEFAULT_MODEL;
+    let installedModels: string[];
+    try {
+      installedModels = await listInstalledModels();
+    } catch (error) {
+      return Response.json(
+        { error: `Unable to list installed models: ${toErrorMessage(error)}` },
+        { status: 503 }
+      );
+    }
+
+    if (!installedModels.includes(requestedModel)) {
+      // Miss may just be a stale cache (model pulled since last check) — refresh once.
+      try {
+        installedModels = await listInstalledModels(true);
+      } catch {
+        /* keep the cached list; the error below reports what we know */
+      }
+      if (!installedModels.includes(requestedModel)) {
+        return Response.json(
+          {
+            error: `Model "${requestedModel}" is not installed.`,
+            requestedModel,
+            installedModels
+          },
+          { status: 400 }
+        );
+      }
+    }
+
     const workspacePath = workspace || path.resolve(process.cwd());
     // One-shot approvals are folded into the allow list so the same command is
     // not held for review again; the deny list still wins.
@@ -41,7 +97,7 @@ export async function POST(req: NextRequest) {
     );
 
     const config: AgentConfig = {
-      model: selectedModel,
+      model: requestedModel,
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       maxIterations: 8,
       workspacePath: workspacePath,
@@ -141,19 +197,31 @@ export async function POST(req: NextRequest) {
       async start(controller) {
         const encoder = new TextEncoder();
         
-        function sendEvent(type: string, data: any) {
-          const formatted = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+        function sendEvent(update: AgentUpdate) {
+          const formatted = `event: ${update.type}\ndata: ${JSON.stringify(update)}\n\n`;
           controller.enqueue(encoder.encode(formatted));
         }
 
         try {
+          sendEvent({
+            type: 'run_started',
+            protocol: CHAT_STREAM_PROTOCOL,
+            model: requestedModel,
+            runStatus: resolvedSettings.executionMode === 'planning' ? 'planning' : 'executing'
+          });
+
           const agentStream = runAgent(config, sanitizedHistory);
-          
+
           for await (const update of agentStream) {
-            sendEvent(update.type, update);
+            sendEvent(update);
           }
-        } catch (error: any) {
-          sendEvent('error', { content: error.message });
+        } catch (error) {
+          sendEvent({
+            type: 'error',
+            content: toErrorMessage(error),
+            code: 'stream_error',
+            runStatus: 'failed'
+          });
         } finally {
           controller.close();
         }
@@ -162,16 +230,19 @@ export async function POST(req: NextRequest) {
 
     return new Response(stream, {
       headers: {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': `${CHAT_STREAM_CONTENT_TYPE}; charset=utf-8`,
+        [CHAT_STREAM_PROTOCOL_HEADER]: CHAT_STREAM_PROTOCOL,
         'Cache-Control': 'no-cache, no-transform',
-        'Connection': 'keep-alive'
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
       }
     });
 
-  } catch (error: any) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+  } catch (error) {
+    return Response.json({ error: toErrorMessage(error) }, { status: 500 });
   }
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

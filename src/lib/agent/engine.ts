@@ -332,8 +332,21 @@ function isMutationRequest(goal: string): boolean {
   return ENGLISH_MUTATION_VERB.test(goal) || ARABIC_MUTATION_VERB.test(goal);
 }
 
+/**
+ * True when the user explicitly asked to run something in a shell, so a
+ * file-tool substitution should be rejected in favour of `run_command`.
+ *
+ * The bare word "command" is deliberately NOT a trigger: "create a
+ * command-line parser" or "add a command handler" are build requests, not
+ * shell requests, and matching "command" there wrongly discarded a valid
+ * write_file. We require an explicit shell/terminal name, or a "run/execute …
+ * command" phrasing. Arabic shell terms are included since the app is bilingual.
+ */
 function requestsShellExecution(goal: string): boolean {
-  return /\b(powershell|terminal|shell|command(?: prompt)?|cmd(?:\.exe)?)\b/i.test(goal);
+  return (
+    /\b(powershell|command prompt|cmd(?:\.exe)?|bash|terminal|shell|طرفية|سطر الأوامر|الطرفية)\b/i.test(goal) ||
+    /\b(run|execute|نفّذ|نفذ|شغّل|شغل)\b[\s\S]{0,24}\b(command|script|أمر|الأمر|سكربت)\b/i.test(goal)
+  );
 }
 
 /** Extracts a readable message from an unknown thrown value. */
@@ -987,21 +1000,11 @@ async function* runVerificationPhase(
       continue;
     }
 
-    yield {
-      type: 'tool_call',
-      name: 'run_command',
-      args: { command },
-      phase: 'verify',
-      estimatedTime: run.estimatedTime
-    };
-
-    const startTime = Date.now();
     const executionResult = await runtime.executeTool(
       'run_command',
       { command },
       config.workspacePath
     );
-    const duration = Date.now() - startTime;
     const passed = executionResult.ok;
 
     if (passed) recordToolEffect(run, 'run_command', { command }, executionResult);
@@ -1013,15 +1016,11 @@ async function* runVerificationPhase(
     };
     run.verifications.push(result);
 
-    yield {
-      type: 'tool_result',
-      name: 'run_command',
-      result: executionResult,
-      resultStatus: executionResult.ok ? 'succeeded' : 'failed',
-      duration,
-      phase: 'verify',
-      estimatedTime: run.estimatedTime
-    };
+    // Emit ONLY the dedicated `verification` event. A `tool_call`/`tool_result`
+    // pair here would be redundant with it (the client renders the verify card
+    // from `verification`), and — because these verify-phase events carry no
+    // callId — the client's `tool_call` handler throws "missing callId",
+    // failing an otherwise-successful run. See useChat handleEvent.
     yield {
       type: 'verification',
       verification: result,

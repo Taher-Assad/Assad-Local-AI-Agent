@@ -44,10 +44,10 @@ export function ExecutionModeBar({ settings, onChange, disabled = false }: Execu
               title={option.hint}
               disabled={disabled}
               onClick={() => onChange({ executionMode: option.value })}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] transition disabled:opacity-50 disabled:cursor-not-allowed ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] transition disabled:opacity-50 disabled:cursor-not-allowed ${
                 active
-                  ? 'bg-purple-950/50 border-purple-700/60 text-purple-100'
-                  : 'bg-zinc-950/60 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                  ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-100 ag-glow'
+                  : 'ag-glass ag-glass-hover text-zinc-400 hover:text-zinc-200'
               }`}
             >
               {option.value === 'planning' ? (
@@ -70,7 +70,7 @@ export function ExecutionModeBar({ settings, onChange, disabled = false }: Execu
           onChange={event =>
             onChange({ artifactReviewPolicy: event.target.value as ArtifactReviewPolicy })
           }
-          className="bg-zinc-950/80 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-300 focus:border-purple-700 focus:outline-none disabled:opacity-50"
+          className="ag-glass rounded-lg px-1.5 py-1 text-[10px] text-zinc-300 focus:border-indigo-500/70 focus:outline-none disabled:opacity-50"
           aria-label="Artifact review policy"
         >
           {ARTIFACT_OPTIONS.map(option => (
@@ -90,7 +90,7 @@ export function ExecutionModeBar({ settings, onChange, disabled = false }: Execu
           onChange={event =>
             onChange({ commandExecutionPolicy: event.target.value as CommandExecutionPolicy })
           }
-          className="bg-zinc-950/80 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-300 focus:border-purple-700 focus:outline-none disabled:opacity-50"
+          className="ag-glass rounded-lg px-1.5 py-1 text-[10px] text-zinc-300 focus:border-indigo-500/70 focus:outline-none disabled:opacity-50"
           aria-label="Terminal command auto execution policy"
         >
           {COMMAND_OPTIONS.map(option => (

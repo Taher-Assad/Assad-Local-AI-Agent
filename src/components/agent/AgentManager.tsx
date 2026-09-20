@@ -15,14 +15,14 @@ interface AgentManagerProps {
 }
 
 const STATUS_CHIP: Record<AgentRunStatus, string> = {
-  idle: 'bg-zinc-900 text-zinc-500 border-zinc-800',
-  planning: 'bg-purple-950/40 text-purple-300 border-purple-800/50',
-  'awaiting-review': 'bg-amber-950/40 text-amber-300 border-amber-800/50',
-  executing: 'bg-blue-950/40 text-blue-300 border-blue-800/50',
-  verifying: 'bg-cyan-950/40 text-cyan-300 border-cyan-800/50',
-  completed: 'bg-green-950/30 text-green-400 border-green-900/40',
-  failed: 'bg-red-950/30 text-red-400 border-red-900/40',
-  cancelled: 'bg-zinc-900 text-zinc-500 border-zinc-800'
+  idle: 'bg-white/[0.04] text-zinc-500 border-white/10',
+  planning: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/40',
+  'awaiting-review': 'bg-amber-500/15 text-amber-300 border-amber-500/40',
+  executing: 'bg-sky-500/15 text-sky-300 border-sky-500/40',
+  verifying: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/40',
+  completed: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  failed: 'bg-red-500/15 text-red-400 border-red-500/30',
+  cancelled: 'bg-white/[0.04] text-zinc-500 border-white/10'
 };
 
 const STATUS_LABEL: Record<AgentRunStatus, string> = {
@@ -90,18 +90,18 @@ function AgentManagerRow({
             onSelect(run.sessionId);
           }
         }}
-        className={`group flex flex-col gap-1 px-2.5 py-2 rounded-lg cursor-pointer transition text-xs font-mono border
+        className={`group flex flex-col gap-1 pl-3 pr-2.5 py-2 rounded-xl cursor-pointer transition text-xs border
           ${
             isActive
-              ? 'bg-purple-950/30 text-purple-200 border-purple-900/30'
-              : 'text-zinc-400 hover:bg-zinc-900/40 hover:text-zinc-200 border-transparent'
+              ? 'ag-active-rail bg-indigo-500/10 text-indigo-100 border-indigo-500/30 ag-glow'
+              : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 border-transparent'
           }`}
       >
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate">{run.title}</span>
+          <span className="truncate font-medium">{run.title}</span>
           <button
             onClick={e => onDelete(run.sessionId, e)}
-            className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 rounded hover:bg-red-950/40 text-zinc-500 hover:text-red-400 transition shrink-0"
+            className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 rounded-md hover:bg-red-500/15 text-zinc-500 hover:text-red-400 transition shrink-0"
             aria-label={`Delete ${run.title}`}
           >
             <Trash2 size={12} aria-hidden="true" />
@@ -130,7 +130,7 @@ function AgentManagerRow({
 
         {run.progress && run.progress.total > 0 && (
           <div
-            className="h-[3px] w-full rounded-full bg-zinc-900 overflow-hidden"
+            className="h-[3px] w-full rounded-full bg-white/[0.06] overflow-hidden"
             role="progressbar"
             aria-valuenow={run.progress.percent}
             aria-valuemin={0}
@@ -138,7 +138,7 @@ function AgentManagerRow({
             aria-label={`${run.title} progress`}
           >
             <div
-              className="h-full bg-purple-600 transition-all duration-500"
+              className="ag-brand-gradient h-full transition-all duration-500"
               style={{ width: `${run.progress.percent}%` }}
             />
           </div>
@@ -168,19 +168,19 @@ export function AgentManager({
   );
 
   return (
-    <div className="flex flex-col bg-zinc-950/30 border-b border-zinc-900/60 max-h-[280px]">
-      <div className="flex items-center justify-between p-3 border-b border-zinc-900/60">
+    <div className="flex flex-col bg-black/10 border-b border-white/[0.06] max-h-[280px]">
+      <div className="flex items-center justify-between p-3 border-b border-white/[0.06]">
         <div className="flex items-center gap-1.5">
-          <Activity size={11} className="text-purple-400" aria-hidden="true" />
-          <h2 className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+          <Activity size={12} className="text-indigo-400" aria-hidden="true" />
+          <h2 className="text-[10px] font-semibold text-zinc-300 uppercase tracking-widest">
             Agent Manager
           </h2>
         </div>
         <button
           onClick={onCreateSession}
-          className="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-purple-900/50 hover:bg-purple-800 text-[10px] text-purple-100 transition font-mono border border-purple-800/40"
+          className="ag-brand-gradient ag-brand-gradient-hover flex items-center space-x-1 px-2 py-1 rounded-lg text-[10px] font-medium text-white transition ag-glow-soft"
         >
-          <Plus size={10} aria-hidden="true" />
+          <Plus size={11} aria-hidden="true" />
           <span>New Agent</span>
         </button>
       </div>

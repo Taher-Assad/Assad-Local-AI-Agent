@@ -28,17 +28,17 @@ export function FileExplorer({ files, loading, onFileSelect, onFolderExpand }: F
                     onFolderExpand(item.path);
                   }
                 }}
-                className="flex items-center space-x-1.5 py-1 px-1.5 rounded hover:bg-zinc-800/60 text-zinc-300 hover:text-zinc-100 w-full text-left transition"
+                className="flex items-center space-x-1.5 py-1 px-1.5 rounded-md hover:bg-white/[0.05] text-zinc-300 hover:text-zinc-100 w-full text-left transition"
               >
                 {isExpanded ? (
-                  <FolderOpen size={14} className="text-purple-400/80 shrink-0" />
+                  <FolderOpen size={14} className="text-indigo-400/90 shrink-0" />
                 ) : (
-                  <Folder size={14} className="text-purple-500/80 shrink-0" />
+                  <Folder size={14} className="text-indigo-500/80 shrink-0" />
                 )}
                 <span className="truncate">{item.name}</span>
               </button>
               {isExpanded && item.children && (
-                <div className="border-l border-zinc-800/80 ml-2.5">
+                <div className="border-l border-white/[0.07] ml-2.5">
                   {renderTree(item.children)}
                 </div>
               )}
@@ -46,7 +46,7 @@ export function FileExplorer({ files, loading, onFileSelect, onFolderExpand }: F
           ) : (
             <button
               onClick={() => onFileSelect(item.path)}
-              className="flex items-center space-x-1.5 py-1 px-1.5 rounded hover:bg-zinc-800/60 text-zinc-400 hover:text-zinc-200 w-full text-left transition"
+              className="flex items-center space-x-1.5 py-1 px-1.5 rounded-md hover:bg-white/[0.05] text-zinc-400 hover:text-zinc-200 w-full text-left transition"
             >
               <FileCodeIcon item={item} />
               <span className="truncate">{item.name}</span>
@@ -58,10 +58,10 @@ export function FileExplorer({ files, loading, onFileSelect, onFolderExpand }: F
   };
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950/20 border-r border-zinc-900/60">
-      <div className="flex items-center justify-between p-3 border-b border-zinc-900/60">
-        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Workspace Files</span>
-        {loading && <Loader2 size={12} className="text-purple-500 animate-spin" />}
+    <div className="flex flex-col h-full bg-transparent border-r border-white/[0.06]">
+      <div className="flex items-center justify-between p-3 border-b border-white/[0.06]">
+        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest">Workspace Files</span>
+        {loading && <Loader2 size={12} className="text-indigo-400 animate-spin" />}
       </div>
       
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -75,6 +75,6 @@ export function FileExplorer({ files, loading, onFileSelect, onFolderExpand }: F
   );
 }
 
-function FileCodeIcon({ item }: { item: FileItem }) {
+function FileCodeIcon({}: { item: FileItem }) {
   return <FileText size={14} className="text-zinc-500 shrink-0" />;
 }

@@ -139,7 +139,7 @@ export function ChatInput({ onSend, isLoading, onCancel }: ChatInputProps) {
       )}
 
       {/* Input Row */}
-      <form onSubmit={handleSubmit} className="relative flex items-end space-x-2 bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-2.5">
+      <form onSubmit={handleSubmit} className="ag-glass ag-ring-focus relative flex items-end space-x-2 rounded-2xl p-2.5 transition">
         {/* Hidden file input */}
         <input
           type="file"
@@ -154,7 +154,7 @@ export function ChatInput({ onSend, isLoading, onCancel }: ChatInputProps) {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="self-end pb-1 p-2 rounded-lg text-zinc-400 hover:text-purple-400 hover:bg-zinc-800/60 transition shrink-0"
+          className="self-end pb-1 p-2 rounded-lg text-zinc-400 hover:text-indigo-300 hover:bg-white/[0.06] transition shrink-0"
           title="Attach image (or paste from clipboard)"
         >
           <ImagePlus size={17} />
@@ -188,7 +188,7 @@ export function ChatInput({ onSend, isLoading, onCancel }: ChatInputProps) {
             <button
               type="submit"
               disabled={!canSend}
-              className="flex items-center justify-center p-2 rounded-lg bg-purple-900/80 text-purple-100 hover:bg-purple-800 disabled:opacity-40 disabled:cursor-not-allowed transition duration-150"
+              className="ag-brand-gradient ag-brand-gradient-hover ag-glow-soft flex items-center justify-center p-2 rounded-lg text-white disabled:opacity-30 disabled:cursor-not-allowed disabled:shadow-none transition duration-150"
             >
               <Send size={16} />
             </button>
