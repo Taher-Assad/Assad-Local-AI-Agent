@@ -29,6 +29,9 @@ describe('classifyTool', () => {
     assert.equal(classifyTool('view_image'), 'read');
     assert.equal(classifyTool('write_file'), 'write');
     assert.equal(classifyTool('edit_file'), 'write');
+    assert.equal(classifyTool('copy_file'), 'write');
+    assert.equal(classifyTool('move_file'), 'write');
+    assert.equal(classifyTool('delete_file'), 'write');
     assert.equal(classifyTool('run_command'), 'command');
   });
 

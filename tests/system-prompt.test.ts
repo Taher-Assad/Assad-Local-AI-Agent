@@ -5,6 +5,7 @@ import {
   buildSystemPrompt,
   DEFAULT_SYSTEM_PROMPT,
   EXECUTION_PROMPT,
+  FAST_EXECUTION_PROMPT,
   PLANNING_PROMPT,
   VERIFICATION_PROMPT
 } from '../src/lib/agent/system-prompt.ts';
@@ -55,9 +56,21 @@ describe('buildSystemPrompt', () => {
     assert.match(prompt, /Write the parser/);
   });
 
-  it('omits the execution contract in Fast Mode', () => {
+  it('uses the Fast Mode contract, not the planning one, in Fast Mode execution', () => {
     const prompt = buildSystemPrompt({ settings: settings(), phase: 'execute' });
+    assert.ok(prompt.includes(FAST_EXECUTION_PROMPT));
     assert.ok(!prompt.includes(EXECUTION_PROMPT));
+    assert.match(prompt, /CALL A TOOL ON YOUR FIRST RESPONSE/);
+  });
+
+  it('does not leak the Fast Mode contract into the planning execute phase', () => {
+    const prompt = buildSystemPrompt({
+      settings: settings({ executionMode: 'planning' }),
+      phase: 'execute',
+      approvedPlanBody: '## Setup\n- Write the parser'
+    });
+    assert.ok(prompt.includes(EXECUTION_PROMPT));
+    assert.ok(!prompt.includes(FAST_EXECUTION_PROMPT));
   });
 
   it('uses the verification contract in the verify phase', () => {
@@ -69,12 +82,11 @@ describe('buildSystemPrompt', () => {
     assert.ok(!prompt.includes(EXECUTION_PROMPT));
   });
 
-  it('directs action requests to workspace-local PowerShell tools', () => {
+  it('directs actions to workspace-local dedicated tools', () => {
     const prompt = buildSystemPrompt({ settings: settings(), workspacePath: 'c:/tmp/ws' });
-    assert.match(prompt, /prefer `run_command` with PowerShell syntax on Windows/i);
-    assert.match(prompt, /explicitly requests PowerShell.*MUST use `run_command`/i);
-    assert.match(prompt, /Set-Content -NoNewline/);
-    assert.match(prompt, /structured tool call/);
+    assert.match(prompt, /Prefer it over shell redirection/i);
+    assert.match(prompt, /Do not use it for file operations covered by a dedicated file tool/i);
+    assert.match(prompt, /native tool calls/i);
     assert.match(prompt, /Never access paths outside that workspace/);
   });
 

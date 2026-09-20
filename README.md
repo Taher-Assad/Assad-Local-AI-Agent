@@ -71,9 +71,38 @@ Run the full automated test suite:
 npm test
 ```
 
+Typecheck (note: `npm test` runs `node --test` on `.ts` directly and does **not** typecheck):
+```bash
+npx tsc --noEmit
+```
+
 Build for production:
 ```bash
 npm run build
+```
+
+---
+
+## ⚡ Performance tuning
+
+Local inference cost is dominated by how many tokens the model must process on
+each call and how many round-trips a run takes. These environment variables tune
+that without code changes:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `AGENT_MODEL_NUM_CTX` | `8192` | Ollama `num_ctx`. The fixed per-call overhead (system prompt + tool schemas) is ~2.7k tokens. If the context window overflows mid-run, Ollama drops its cached prefix and re-processes that overhead on every later call — the biggest slowdown in multi-step runs. Raise it to retain more history (costs more KV-cache VRAM); lower it on tight hardware. |
+| `AGENT_MODEL_TEMPERATURE` | `0.1` | Sampling temperature for execution turns (`0`–`2`). |
+| `AGENT_PLANNING_TEMPERATURE` | `0.2` | Sampling temperature for the planning turn. |
+| `AGENT_OLLAMA_KEEP_ALIVE` | `15m` | How long Ollama keeps the model resident between turns. Staying warm skips the multi-second reload each turn; set `off` to opt out. |
+
+Measure the effect of any change with the built-in benchmark harness (requires a
+running dev server and Ollama):
+```bash
+npm run dev              # in one terminal
+npm run benchmark:chat -- --runs 7 --output before.json
+# make a change, restart dev, then:
+npm run benchmark:chat -- --runs 7 --baseline before.json
 ```
 
 ---

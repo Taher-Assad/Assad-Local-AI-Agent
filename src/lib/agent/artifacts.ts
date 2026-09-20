@@ -473,6 +473,35 @@ function bulletList(items: string[]): string {
   return items.length > 0 ? items.map(item => `- ${item}`).join('\n') : '- _None_';
 }
 
+/** A one-line, plain-language recap used when the model left no closing note. */
+function summarizeOutcome(
+  files: string[],
+  commands: { command: string; ok: boolean }[],
+  verifications: VerificationResult[]
+): string {
+  const parts: string[] = [
+    files.length > 0
+      ? `Changed ${files.length} file${files.length === 1 ? '' : 's'}.`
+      : 'No files were changed.'
+  ];
+  if (commands.length > 0) {
+    parts.push(`Ran ${commands.length} command${commands.length === 1 ? '' : 's'}.`);
+  }
+  if (verifications.length > 0) {
+    const passed = verifications.filter(result => result.passed).length;
+    parts.push(`Verification: ${passed}/${verifications.length} checks passed.`);
+  }
+  return parts.join(' ');
+}
+
+/** Trims a goal down to a readable artifact title. */
+function toTitle(goal: string, max = 60): string {
+  const clean = goal.trim().replace(/\s+/g, ' ');
+  if (!clean) return 'Walkthrough';
+  const short = clean.length <= max ? clean : `${clean.slice(0, max - 1).trimEnd()}…`;
+  return `Walkthrough — ${short}`;
+}
+
 /**
  * Produces the Walkthrough artifact: what changed, how it was verified, and
  * what is left. This is the run's closing summary in Antigravity.
@@ -480,36 +509,76 @@ function bulletList(items: string[]): string {
 export function createWalkthrough(input: WalkthroughInput): Artifact {
   const groups = input.taskGroups ?? input.plan?.taskGroups ?? [];
   const progress = computeProgress(groups);
+  const files = input.filesTouched ?? [];
+  const commands = input.commands ?? [];
+  const verifications = input.verifications ?? [];
+  const goal = input.goal.trim();
   const sections: string[] = [];
 
-  sections.push(`**Goal**\n\n${input.goal.trim() || '_Not specified_'}`);
-
-  if (groups.length > 0) {
+  // 1. Narrative lead — the agent explaining, in its own words, what it set out
+  //    to do and what it delivered. Like Antigravity, the walkthrough is a
+  //    report you read to trust the work, not a raw dump of state. When the
+  //    model left a closing note we use it verbatim; otherwise we synthesize one.
+  const overview = input.notes?.trim();
+  if (overview) {
+    sections.push(`**Summary**\n\n${overview}`);
+    if (goal) sections.push(`**You asked**\n\n${goal}`);
+  } else {
     sections.push(
-      `**What was done** (${progress.done}/${progress.total} tasks complete)\n\n${renderTaskGroupsMarkdown(groups)}`
+      `**Summary**\n\nI worked on: ${goal || 'the requested task'}. ${summarizeOutcome(files, commands, verifications)}`
     );
   }
 
-  sections.push(`**Files changed**\n\n${bulletList(input.filesTouched ?? [])}`);
+  // 2. What I did — the plan checklist when there is one.
+  if (groups.length > 0) {
+    sections.push(
+      `**What I did** (${progress.done}/${progress.total} tasks complete)\n\n${renderTaskGroupsMarkdown(groups)}`
+    );
+  }
 
-  if (input.commands && input.commands.length > 0) {
+  // 3. Files changed.
+  sections.push(`**Files changed**\n\n${bulletList(files)}`);
+
+  // 4. Commands.
+  if (commands.length > 0) {
     sections.push(
       `**Commands run**\n\n${bulletList(
-        input.commands.map(entry => `\`${entry.command}\` — ${entry.ok ? 'ok' : 'failed'}`)
+        commands.map(entry => `\`${entry.command}\` — ${entry.ok ? 'ok' : 'failed'}`)
       )}`
     );
   }
 
-  const verifications = input.verifications ?? [];
+  // 5. How I verified this — evidence of correctness, honest when none ran.
   sections.push(
-    `**Verification**\n\n${bulletList(
-      verifications.map(
-        result =>
-          `${result.passed ? 'PASS' : 'FAIL'} — ${result.label}${result.command ? ` (\`${result.command}\`)` : ''}`
-      )
-    )}`
+    `**How I verified this**\n\n${
+      verifications.length === 0
+        ? '- _No automated checks were run in this mode._'
+        : bulletList(
+            verifications.map(
+              result =>
+                `${result.passed ? 'PASS' : 'FAIL'} — ${result.label}${result.command ? ` (\`${result.command}\`)` : ''}`
+            )
+          )
+    }`
   );
 
+  // 6. Evidence — screenshots / recordings the run produced render below the body.
+  if (input.media && input.media.length > 0) {
+    const shots = input.media.filter(item => item.kind === 'image').length;
+    const clips = input.media.filter(item => item.kind === 'video').length;
+    const bits: string[] = [];
+    if (shots > 0) bits.push(`${shots} screenshot${shots === 1 ? '' : 's'}`);
+    if (clips > 0) bits.push(`${clips} recording${clips === 1 ? '' : 's'}`);
+    sections.push(`**Evidence**\n\n${bits.join(' and ')} attached below as proof of the result.`);
+  }
+
+  // 7. Try it — a concrete way to see a web deliverable for yourself.
+  const openable = files.find(file => /\.html?$/i.test(file));
+  if (openable) {
+    sections.push(`**Try it**\n\nOpen \`${openable}\` in your browser to see it live.`);
+  }
+
+  // 8. Not finished — anything still pending or blocked.
   const remaining = flattenTasks(groups).filter(
     task => task.status === 'pending' || task.status === 'failed'
   );
@@ -519,19 +588,26 @@ export function createWalkthrough(input: WalkthroughInput): Artifact {
     );
   }
 
-  if (input.notes && input.notes.trim()) {
-    sections.push(`**Notes**\n\n${input.notes.trim()}`);
-  }
-
   const allPassed = verifications.length > 0 && verifications.every(result => result.passed);
+  const verificationNote =
+    verifications.length === 0 ? 'not verified' : `verification ${allPassed ? 'passed' : 'failed'}`;
+
+  // With a plan, report plan progress. Without one (Fast Mode) that would always
+  // read "0% of the plan complete", so summarise the concrete work instead.
+  let summary: string;
+  if (groups.length > 0) {
+    summary = `${progress.percent}% of the plan complete; ${verificationNote}.`;
+  } else {
+    const parts = [`${files.length} file${files.length === 1 ? '' : 's'} changed`];
+    if (commands.length > 0) parts.push(`${commands.length} command${commands.length === 1 ? '' : 's'} run`);
+    if (verifications.length > 0) parts.push(verificationNote);
+    summary = `${parts.join('; ')}.`;
+  }
 
   return createArtifact({
     kind: 'walkthrough',
-    title: 'Walkthrough',
-    summary:
-      verifications.length === 0
-        ? `${progress.percent}% of the plan complete; not verified.`
-        : `${progress.percent}% of the plan complete; verification ${allPassed ? 'passed' : 'failed'}.`,
+    title: toTitle(goal),
+    summary,
     body: sections.join('\n\n'),
     status: 'final',
     taskGroups: groups.length > 0 ? groups : undefined,

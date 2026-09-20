@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { extractToolCallsFromText, runAgent } from '../src/lib/agent/engine.ts';
+import { decodeNativeToolCalls, extractToolCallsFromText, runAgent } from '../src/lib/agent/engine.ts';
 import type { AgentRuntime, AgentUpdate } from '../src/lib/agent/engine.ts';
 import type {
   ModelCallMetadata,
@@ -50,13 +50,29 @@ async function runWith(
       const next = replies.shift();
       assert.ok(next, 'unexpected model call');
       return next;
+    },
+    async recoverAction(request, callMetadata) {
+      requests.push(request);
+      metadata.push(callMetadata);
+      const next = replies.shift();
+      assert.ok(next, 'unexpected model recovery call');
+      return next;
     }
   };
   const runtime: AgentRuntime = {
     modelClient,
     async executeTool(name, args) {
       executions.push({ name, args });
-      return 'tool succeeded';
+      const workspaceChanged = ['write_file', 'edit_file', 'copy_file', 'move_file', 'delete_file'].includes(name) ||
+        (name === 'run_command' && typeof (args as { command?: unknown }).command === 'string' &&
+          /set-content|new-item|remove-item|move-item|copy-item|>|mkdir|rm|del|mv|cp/i.test((args as { command: string }).command));
+      return {
+        ok: true,
+        output: 'tool succeeded',
+        effects: workspaceChanged
+          ? [{ operation: name, paths: ['probe.txt'], workspaceChanged: true }]
+          : []
+      };
     }
   };
   const history: Message[] = [{ role: 'user', content: goal }];
@@ -70,13 +86,13 @@ describe('Qwen tool-call parsing', () => {
     assert.deepEqual(
       extractToolCallsFromText(
         '<tool_call>{"function":{"name":"run_command","arguments":"{\\"command\\":\\"npm test\\"}"}}</tool_call>'
-      ),
+      ).map(({ name, args }) => ({ name, args })),
       [{ name: 'run_command', args: { command: 'npm test' } }]
     );
     assert.deepEqual(
       extractToolCallsFromText(
         '[{"name":"list_directory","arguments":{}},{"function_call":{"name":"read_file","arguments":{"filePath":"a.ts"}}}]'
-      ),
+      ).map(({ name, args }) => ({ name, args })),
       [
         { name: 'list_directory', args: {} },
         { name: 'read_file', args: { filePath: 'a.ts' } }
@@ -89,6 +105,27 @@ describe('Qwen tool-call parsing', () => {
       extractToolCallsFromText('{"name":"invent_shell","arguments":{"command":"whoami"}}'),
       []
     );
+  });
+
+  it('does not execute JSON examples embedded in prose', () => {
+    assert.deepEqual(
+      extractToolCallsFromText('For example, use {"name":"read_file","arguments":{"filePath":"secret.txt"}}.'),
+      []
+    );
+  });
+
+  it('validates required arguments and types', () => {
+    const missing = decodeNativeToolCalls([
+      { function: { name: 'write_file', arguments: { filePath: 'a.txt' } } }
+    ]);
+    assert.equal(missing.calls.length, 0);
+    assert.match(missing.errors.join(' '), /content is required/);
+
+    const wrongType = decodeNativeToolCalls([
+      { function: { name: 'delete_file', arguments: { filePath: 'a.txt', recursive: 'yes' } } }
+    ]);
+    assert.equal(wrongType.calls.length, 0);
+    assert.match(wrongType.errors.join(' '), /recursive must be a boolean/);
   });
 });
 
@@ -107,6 +144,7 @@ describe('agent tool execution', () => {
     ]);
     assert.deepEqual(result.metadata, [
       { phase: 'execute', iteration: 1 },
+      { phase: 'execute', iteration: 2 },
       { phase: 'execute', iteration: 2 }
     ]);
     assert.equal(result.requests[1].messages?.at(-1)?.tool_name, 'run_command');
@@ -136,7 +174,11 @@ describe('agent tool execution', () => {
     const result = await runWith(
       [
         response('I will create that file now.'),
-        response('<tool_call>{"name":"run_command","arguments":{"command":"New-Item probe.txt"}}</tool_call>'),
+        response(JSON.stringify({
+          action: { name: 'run_command', arguments: { command: 'New-Item probe.txt' } },
+          completed: false,
+          reason: 'Create the requested file.'
+        })),
         response('Done.')
       ],
       'Create probe.txt'
@@ -145,8 +187,9 @@ describe('agent tool execution', () => {
     assert.equal(result.executions.length, 1);
     assert.match(
       String(result.requests[1].messages?.at(-1)?.content),
-      /did not call a tool/
+      /contained no valid explicit tool call/
     );
+    assert.equal(result.requests[1].tools, undefined);
     assert.ok(!result.updates.some(update =>
       update.type === 'text' && update.content?.includes('I will create')
     ));
@@ -154,15 +197,40 @@ describe('agent tool execution', () => {
 
   it('fails explicitly after the bounded correction when Qwen still returns prose', async () => {
     const result = await runWith(
-      [response('I will do it.'), response('Creating it now.')],
+      [
+        response('I will do it.'),
+        response('not valid recovery JSON'),
+        response('Creating it now.'),
+        response('still not valid recovery JSON')
+      ],
       'Create probe.txt'
     );
 
     assert.equal(result.executions.length, 0);
     assert.ok(result.updates.some(update =>
-      update.type === 'error' && update.content?.includes('Nothing was executed')
+      update.type === 'error' && update.content?.includes('did not complete the requested action')
     ));
     assert.ok(!result.updates.some(update => update.type === 'text'));
+  });
+
+  it('falls back to an explicit text call when all native calls are invalid', async () => {
+    const malformed: ToolCall = {
+      function: { name: 'unknown_write', arguments: {} }
+    };
+    const result = await runWith(
+      [
+        response(
+          '<tool_call>{"name":"write_file","arguments":{"filePath":"probe.txt","content":"OK"}}</tool_call>',
+          [malformed]
+        ),
+        response(JSON.stringify({ action: null, completed: true, reason: 'The file was created.' }))
+      ],
+      'Create probe.txt containing OK'
+    );
+
+    assert.deepEqual(result.executions, [
+      { name: 'write_file', args: { filePath: 'probe.txt', content: 'OK' } }
+    ]);
   });
 
   it('allows direct answers for informational questions', async () => {
@@ -174,6 +242,45 @@ describe('agent tool execution', () => {
     assert.equal(result.executions.length, 0);
     assert.ok(result.updates.some(update =>
       update.type === 'text' && update.content?.includes('named collection')
+    ));
+  });
+
+  it('recovers a prose-only response to an Arabic action request', async () => {
+    // Regression: an Arabic goal used to be classified as non-actionable, so
+    // the model could answer with a plan (prose) and the run would end having
+    // executed nothing instead of recovering into a real tool call.
+    const result = await runWith(
+      [
+        response('سأقوم بإنشاء الملف الآن.'),
+        response(JSON.stringify({
+          action: { name: 'run_command', arguments: { command: 'New-Item probe.txt' } },
+          completed: false,
+          reason: 'Create the requested file.'
+        })),
+        response('تم.')
+      ],
+      'أنشئ ملف probe.txt'
+    );
+
+    assert.equal(result.executions.length, 1);
+    assert.match(
+      String(result.requests[1].messages?.at(-1)?.content),
+      /contained no valid explicit tool call/
+    );
+    assert.ok(!result.updates.some(update =>
+      update.type === 'text' && update.content?.includes('سأقوم بإنشاء')
+    ));
+  });
+
+  it('answers an Arabic informational question directly without tools', async () => {
+    const result = await runWith(
+      [response('الملف هو مجموعة من البيانات لها اسم.')],
+      'ما هو الملف؟'
+    );
+
+    assert.equal(result.executions.length, 0);
+    assert.ok(result.updates.some(update =>
+      update.type === 'text' && update.content?.includes('مجموعة من البيانات')
     ));
   });
 });

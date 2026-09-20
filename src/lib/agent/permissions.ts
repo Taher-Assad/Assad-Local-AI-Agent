@@ -22,6 +22,9 @@ const TOOL_RISK: Record<string, ToolRisk> = {
   view_image: 'read',
   write_file: 'write',
   edit_file: 'write',
+  copy_file: 'write',
+  move_file: 'write',
+  delete_file: 'write',
   run_command: 'command'
 };
 

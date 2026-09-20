@@ -364,6 +364,18 @@ describe('createWalkthrough', () => {
     assert.match(walkthrough.body, /Not finished/);
     assert.match(walkthrough.body, /- _None_/, 'no files touched');
   });
+
+  it('summarises concrete work (not plan %) when there is no plan (Fast Mode)', () => {
+    const walkthrough = createWalkthrough({
+      goal: 'Make a page',
+      filesTouched: ['index.html', 'style.css'],
+      commands: [{ command: 'npm run build', ok: true }]
+    });
+    // Fast-Mode runs have no plan, so the summary must not claim plan progress.
+    assert.doesNotMatch(walkthrough.summary ?? '', /of the plan complete/);
+    assert.match(walkthrough.summary ?? '', /2 files changed/);
+    assert.match(walkthrough.summary ?? '', /1 command run/);
+  });
 });
 
 describe('rendering helpers', () => {

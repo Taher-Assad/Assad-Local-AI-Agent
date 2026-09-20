@@ -9,7 +9,7 @@ import {
   summarizeDurations
 } from '../scripts/benchmark-stats.mjs';
 
-const sample = (caseId, duration, passed = true) => ({
+const sample = (caseId: string, duration: number, passed = true) => ({
   caseId,
   timings: { totalToDoneMs: duration, firstModelEventMs: duration / 2 },
   behavior: { passed }
@@ -54,6 +54,6 @@ describe('benchmark statistics', () => {
     const candidate = summarizeBenchmark([sample('direct', 80), sample('tool', 150)]);
     const comparison = compareSummaries(baseline, candidate);
     assert.equal(comparison.overall.p50TotalToDoneMs.relativeDelta, -0.2);
-    assert.equal(comparison.cases.tool.p50TotalToDoneMs.relativeDelta, -0.25);
+    assert.equal(comparison.cases.tool?.p50TotalToDoneMs.relativeDelta, -0.25);
   });
 });
